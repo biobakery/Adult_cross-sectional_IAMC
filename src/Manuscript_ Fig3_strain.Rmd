@@ -1,0 +1,3184 @@
+---
+title: "IAMC- Cross-sectional Strains"
+author: "Kelsey N. Thompson, Ph.D."
+date: "March, 2019"
+header-includes:
+- \usepackage{titling}
+- \pretitle{\begin{center}\LARGE\includegraphics[width=12cm]{HarvardChan_logo_center_subbrand_RGB_large.png}\\[\bigskipamount]}
+- \posttitle{\end{center}}
+output: 
+  pdf_document:
+    toc: true
+    keep_tex: true
+    dev: png
+---
+
+
+
+\newpage
+```{r setup_functions, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dpi=600)
+library(ggplot2)
+library(vegan)
+library(ggthemes)
+library(ComplexHeatmap)
+library(circlize)
+library(gridExtra)
+library(grid)
+library(pheatmap)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(gplots)
+library(gtools)
+library(plyr)
+library(dplyr)
+library(mgsub)
+library(readr)
+library(viridis)
+library(pairwiseAdonis)
+library(kableExtra)
+library(randomForest)
+library(caret)
+library(ROCR)
+library(ggridges)
+library(ggpubr)
+
+###### functions #######
+keep_species <-function(dat_taxa){
+  temp = dat_taxa[grepl("s__",rownames(dat_taxa)) & (!grepl("t__",rownames(dat_taxa))) & (!grepl("unclassified$",rownames(dat_taxa))),]
+  rownames(temp) = gsub(".*g__.*\\|","",rownames(temp))
+  return(temp)
+}
+
+is_common <- function(otu_df,cutoff=0.1){
+  num_row = dim(otu_df)[1]
+  num_col = dim(otu_df)[2]
+  otu_barcode = otu_df > 0.0001
+  common_index = apply(otu_barcode,1,mean) > cutoff
+  return(common_index)
+}
+
+top_abun <- function(df,num=10){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,mean),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+top_abun_median <- function(df,num=25){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,median),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+
+keep_pathways <-function(dat_path){
+  temp = dat_path[!grepl("\\|",rownames(dat_path)),]
+  # rownames(temp) = gsub(":.*","",rownames(temp))
+  return(temp)
+}
+
+select_pathways <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names.select = pathway.names[index]
+  pathway.names.select = unique(gsub("\\|.*","",pathway.names.select))
+  dat_path = dat_path[pathway.names.select,]
+  # rownames(dat_path) = gsub(":.*","",rownames(dat_path))
+  return(dat_path)
+}
+
+median_matrix <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names = pathway.names[index]
+  dat_path = dat_path[pathway.names,]
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  v_median_all = apply(dat_path,1,median)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  pathway.names.id.unique = unique(pathway.names.id)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  #out = out[,apply(out,2,median)>0]
+  out = out[,names(sort(apply(out,2,sum),decreasing = TRUE)[1:50])]
+  return(out)
+}
+
+same_median_matrix <- function(dat_median,dat_path){
+  taxa.names = rownames(dat_median)
+  pathway.names.id.unique = colnames(dat_median)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  v_median_all = apply(dat_path,1,median)
+  
+  pathway.names = rownames(dat_path)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  return(out)
+}
+
+#Set colors to be consistent across comparisons
+col_drug = c("DMARD conventional synthetic" = "#FFD700", "DMARD biologic" = "#4B0082", "DMARD targeted synthetic" = "#8A2BE2", "Steroid" = "#FF8C00",  "NSAID" = "#F08080", "other" = "#FF4500", "Not recorded" = "#708090", "PPI" = "#87CEFA", "none" = "#90EE90")
+col_diagnosis = c("HC" = "#000080", "RA" = 	"#800080", "AS" = "#DA70D6", "PsA" = "#008000", "NIJP" = "#66CDAA")
+col_inflammation = c("Inflammation" = "#B22222", "Some inflammation" = "#FF8C00", "Not inflamed" = "#4682B4", "Not recorded" = "#808080")
+col_rb = c("Normal" = "#5F9EA0", "Anemia" = "#FF6347", "Not recorded" = "#696969")
+
+
+setwd("/Users/kelseythompson/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional")
+```
+
+\newpage
+```{r setup_tax_meta, include=FALSE}
+map = read.delim("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/mapping_master.tsv", sep = "\t")
+map = map[, -c(1:3)]
+map$batch = as.factor(map$batch)
+
+meta_bhm_ncl = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATABHMNCL_DATA_2021-02-17_1322.csv", stringsAsFactors = FALSE)
+#Pull out each sample once
+bhm_info = subset(meta_bhm_ncl, redcap_repeat_instrument == "")
+bhm_info = bhm_info[,colSums(is.na(bhm_info))<nrow(bhm_info)]
+#Pull out just the metadata with medication
+bhm_med = subset(meta_bhm_ncl, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+bhm_med = bhm_med[,colSums(is.na(bhm_med))<nrow(bhm_med)]
+#Find out which columns are shared between the two datasets
+repeat_measure = intersect(colnames(bhm_info), colnames(bhm_med))
+repeat_measure = repeat_measure[-c(1)]
+bhm_med = bhm_med[, -which(names(bhm_med) %in% repeat_measure)]
+bhm = merge(bhm_info, bhm_med, by = "iamc_id", all = T)
+bhm$Sample = paste(bhm$iamc_id, bhm$redcap_repeat_instance, sep = "v")
+bhm$Sample = gsub("v1", "", bhm$Sample)
+bhm$Sample = gsub("vNA", "", bhm$Sample)
+row.names(bhm) = bhm$Sample
+#Add the cohort within the IAMC to the samples
+bhm$Cohort = gsub("\\d", "", row.names(bhm))
+bhm$batch = map[ match( bhm$Sample, map$sample_id ), "batch"  ]
+#Work on getting the drug category to make sense
+bhm$drug_category[is.na(bhm$drug_category)] = "Not recorded"
+bhm$drug_category = as.factor(bhm$drug_category)
+bhm$drug = recode(bhm$drug_category, "1" = "DMARD conventional synthetic", "2" = "DMARD biologic", "3" = "DMARD targeted synthetic", "4" = "Steroid", "5" = "NSAID", "6" = "other", "7" = "none", "8" = "PPI", "9" = "H2", "Not recorded" = "Not recorded", .default = "Not recorded")
+
+#Work on teh daignosis provided- Karim check these: said they were correct
+bhm$diagnosis_at_time_of_asses[is.na(bhm$diagnosis_at_time_of_asses)] = "Unknown"
+bhm$diagnosis_at_time_of_asses[(bhm$diagnosis_at_time_of_asses== "")] = "Unknown"
+bhm$diagnosis_at_time_of_asses = mgsub(bhm$diagnosis_at_time_of_asses, c("  $", " $", "^ "), c("", "", ""))
+bhm$diagnosis = recode(bhm$diagnosis_at_time_of_asses, "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "Ankylosing Spondylitis", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Drug Induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Fibromyalgia" = "Fibromyalgia", "Gout" = "Gout", "Healthy Control" = "Healthy Control", "Healthy control" = "Healthy Control", "Healthy control.  Blood relative (Daughter) of SWEAC 0213 (BHM00024)" = "Healthy Control", "Healthy control.  Partner of SWEAC 00321 (BHM00205)" = "Healthy Control", "Lupus/Other CTD-Associated" = "Lupus/Other CTD-Associated", "Non-Inflammatory" = "Non-Inflammatory", "Non inflammatory" = "Non-Inflammatory", "PsA" = "PsA", "PSA" = "PsA", "Pseudogout" = "Pseudogout", "Pseudo Gout" = "Pseudogout", "Psoriatic Arthritis" = "PsA", "Ra (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987)" = "RA (1987)", "RA (2010)" = "RA (2010)", "Reactive Arthritis" = "Reactive Arthritis", "Rheumatoid Arthritis" = "RA", "RS3PE" = "RS3PE", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "Undifferentiated Spondylo-Arthropathy", "Unknown" = "Unknown", "Osteoarthritis" = "Osteoarthritis", "Other Inflammatory Arthritis" = "Other Inflammatory Arthritis", "Inflammatory Arthritis related to Hereditary Haemochromatosis" = "Other Inflammatory Arthritis", "Palindromic Rheumatism" = "Other Inflammatory Arthritis", "Other Inflammatory" = "Other Inflammatory Arthritis", "Undifferentiated Inflammatory Arthritis" = "Clinically Suspect Arthralgia", "Enteropathic Arthritis" = "Enteropathic Arthritis", .default = "Unknown")
+
+
+bhm$arthritis_type = recode(bhm$diagnosis, "RA (1987 & 2010)" = "RA", "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "AS", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug Induced Inflammatory Arthritis" = "other", "Fibromyalgia" = "Non-Inflammatory Joint Pain", "Gout" = "Crystal Arthritis", "Healthy Control" = "Healthy Control", "Lupus/Other CTD-Associated" = "other", "Non-Inflammatory" = "Non-Inflammatory Joint Pain", "PsA" = "PsA", "Pseudogout" = "Crystal Arthritis", "RA (1987 & 2010)" = "RA", "RA (1987)" = "RA", "RA (2010)" = "RA", "Reactive Arthritis" = "other", "RA" = "RA", "RS3PE" = "other", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "other", "Unknown" = "Unknown", "Osteoarthritis" = "Non-Inflammatory Joint Pain", "Other Inflammatory Arthritis" = "other", "Enteropathic Arthritis" = "other", .default = "Unknown")
+
+library(lubridate)
+bhm$DOB = parse_date_time(bhm$date_of_birth_month_year, orders = c("ymd", "dmy", "mdy"))
+bhm$DOB = gsub(" UTC", "", bhm$DOB)
+bhm$date = parse_date_time(bhm$assessment_date, orders = c("ymd", "dmy", "mdy"))
+bhm$date = gsub(" UTC", "", bhm$date)
+bhm$age = round(time_length(difftime(as.Date(bhm$date), as.Date(bhm$DOB)), "years"))
+
+#bhm$ccp = paste(bhm$anti_ccp, bhm$arthritis_type, sep = "_")
+#bhm$ccp = gsub("Not recorded/ Not known_Healthy Control", "Negative", bhm$ccp)
+#bhm$ccp = gsub("_.*", "", bhm$ccp)
+
+meta_oas = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATAOAS_DATA_2021-02-17_1321.csv", head = T, sep = ",")
+oas_info = subset(meta_oas, redcap_repeat_instrument == "")
+oas_info = oas_info[,colSums(is.na(oas_info))<nrow(oas_info)]
+oas_med = subset(meta_oas, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+oas_med = oas_med[,colSums(is.na(oas_med))<nrow(oas_med)]
+repeat_measure = intersect(colnames(oas_info), colnames(oas_med))
+repeat_measure = repeat_measure[-c(1)]
+oas_med = oas_med[, -which(names(oas_med) %in% repeat_measure)]
+oas = merge(oas_info, oas_med, by = "iamc_id", all = TRUE)
+oas$Sample = paste(oas$iamc_id, oas$redcap_repeat_instance, sep = "v")
+oas$Sample = gsub("v1", "", oas$Sample)
+oas$Sample = gsub("vNA", "", oas$Sample)
+row.names(oas) = oas$Sample
+oas$Cohort = rep("OAS", nrow(oas))
+oas$diagnosis = oas$patient_id
+oas$diagnosis = gsub("\\d", "", oas$diagnosis)
+oas$diagnosis = gsub("HCB", "HC", oas$diagnosis)
+oas$drug_category = (ifelse(is.na(as.character(oas$drug_category)), "Not recorded", as.character(oas$drug_category)))
+oas$drug = recode(oas$drug_category, "1" = "DMARD conventional synthetic", "2" = "DMARD biologic", "3" = "DMARD targeted synthetic", "4" = "Steroid", "5" = "NSAID", "6" = "other", "7" = "none", "8" = "PPI", "9" = "H2", "Not recorded/Not known" = "Not recorded/Not known", .default = "Not recorded/Not known")
+oas$batch = map[ match( oas$Sample, map$sample_id ), "batch"  ]
+library(lubridate)
+oas$DOB = parse_date_time(oas$date_of_birth_month_year, orders = c("ymd", "dmy", "mdy"))
+oas$DOB = gsub(" UTC", "", oas$DOB)
+oas$DOB = gsub("2065", "1965", oas$DOB)
+oas$date_of_diagnosis_2 = parse_date_time(oas$assessment_date, orders = c("ymd", "dmy", "mdy"))
+oas$date_of_diagnosis_2 = gsub(" UTC", "", oas$date_of_diagnosis_2)
+oas$age = round(time_length(difftime(as.Date(oas$date_of_diagnosis_2), as.Date(oas$DOB)), "years"))
+oas$DOB = NULL
+oas$date_of_diagnosis_2 = NULL
+oas$hla_b27 = as.character(oas$hla_b27)
+oas$hla = recode(oas$hla_b27, "Positive" = "Positive",  "positive" = "Positive", "POSITIVE " = "Positive", "POSITIVE" = "Positive", "Positive ('rare' homozygote)" = "Positive", "Negative" = "Negative", "negative" = "Negative", "NEGATIVE" = "Negative", "negative " = "Negative", "NEGATIVE " = "Negative", "Not done/Not known" = "Not done/Not known", "Not relevant" = "Not done/Not known", "Not relevant " = "Not done/Not known", .default = "Not done/Not known")
+
+
+
+#Metadata exclude
+list_oas = c("Sample", "Cohort", "drug", "esr", "batch", "crp", "disease_duration_at_time_o", "diagnosis", "smoking_current_ever_never", "ethnicity", "bmi", "gender", "iamc_id", "age", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+oas_subset = oas[ , which(colnames(oas) %in% list_oas)]
+names(oas_subset) = c("iamc_id", "gender",  "bmi", "ethnicity","smoking_current_ever_never", "disease_duration", "esr", "crp", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "Sample", "Cohort", "diagnosis", "drug", "batch", "age")
+
+list_bhm = c("Sample", "Cohort", "drug", "esr", "batch", "crp", "disease_duration_at_time", "arthritis_type", "smoking_current_ever_never", "ethnicity", "bmi", "gender", "iamc_id", "age", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+bhm_subset = bhm[ , which(colnames(bhm) %in% list_bhm)]
+names(bhm_subset) = c("iamc_id", "gender",  "bmi", "ethnicity","smoking_current_ever_never", "disease_duration", "esr", "crp", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "Sample", "Cohort", "batch",  "drug", "diagnosis", "age")
+
+meta_dat = rbind(bhm_subset, oas_subset)
+meta_dat$diagnosis = recode(meta_dat$diagnosis, "AS" = "AS", "Clinically Suspect Arthralgia" = "CSA", "Crystal Arthritis" = "Crystal Arthritis", "HC" = "HC", "Healthy Control" = "HC", "Non-Inflammatory Joint Pain" = "NIJP", "NR" = "NR", "other" = "other", "PsA" = "PsA", "RA" = "RA", "Unclassified Inflammatory Arthritis" = "Unclass", "Unknown" = "Unknown", .default = "NA")
+
+#Get the quartiles for crp
+summary(meta_dat$crp)
+#split the data into the quartiles
+quantile(meta_dat$crp, probs = c(0.33, 0.66), na.rm = T)
+meta_dat$inflammation = cut(meta_dat$crp, c(0,4,10,245), labels = c("Not inflamed", "Some inflammation", "Inflammation"))
+meta_dat$inflammation = ifelse(is.na(as.character(meta_dat$inflammation)),"Not recorded", as.character(meta_dat$inflammation))
+meta_dat$inflammation = ifelse(meta_dat$inflammation == "Not recorded" & meta_dat$diagnosis == "HC", "Not inflamed", as.character(meta_dat$inflammation))
+meta_dat$crp_corrected = ifelse(meta_dat$crp > 100, "100", as.character(meta_dat$crp))
+
+#Change the data types in some columns to make them more accurate with variables (i.e. smoking is current in 1 or 0 formats so change that column to character instead of int.)
+str(meta_dat)
+meta_dat$ethnicity = as.character(meta_dat$ethnicity)
+meta_dat$smoking_current_ever_never = as.character(meta_dat$smoking_current_ever_never)
+
+summary(meta_dat$esr)
+#meta_dat$esr_stat = ifelse(is.na(meta_dat$esr) & meta_dat$diagnosis == "HC", "7", as.character(meta_dat$esr))
+#meta_dat$esr_stat = as.numeric(meta_dat$esr_stat)
+meta_dat$disease_duration = ifelse(is.na(meta_dat$disease_duration) & meta_dat$diagnosis == "HC", "0", as.character(meta_dat$disease_duration))
+meta_dat$disease_duration = as.numeric(meta_dat$disease_duration)
+str(meta_dat)
+
+#Deal with the mess that is ethnicity classifications in redcap
+meta_dat$ethnicity = recode(meta_dat$ethnicity, "1" = "Not stated", "2" = "White", "3" = "White", "4" = "White", "5" = "Not White", "6" = "Not White", "7" = "Not White", "8" = "Not White", "9" = "Not White", "10" = "Not White", "11" = "Not White", "12" = "Not White", "13" = "Not White", "14" = "Not White", "15" = "Not White", "16" = "Not White", "17" = "Not White", "18" = "White", "19" = "Not White", "20" = "Not White", "21" = "Not White", "22" = "Not White", .default = "Not stated")
+meta_dat$ethnicity = ifelse(is.na(meta_dat$ethnicity), "Not stated", as.character(meta_dat$ethnicity))
+
+meta_dat$esr = NULL
+meta_dat$bmi = NULL
+
+#hemoglobin : categorical 135 g/L in Men and 120 g/L in women
+#atl : categorical  10-40 units per liter (U/L) of blood for men and 7-35 U/L for women
+
+# taxonomic profiles relative abundance
+dat_taxa = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Input_data/current_merged_1_11_metaphlan_table.tsv",header=TRUE,row.names=1,sep="\t") / 100
+
+### unify ID ###
+#At this point this data set does not have the addition of Sample_DNASample
+#colnames(dat_taxa) = gsub("Sample_DNASample","",colnames(dat_taxa))
+colnames(dat_taxa) = gsub("_taxonomic_profile","",colnames(dat_taxa))
+
+#Exclude samples with little to no reads
+sample_exclude = c("BHM00026", "BHM00034", "BHM00041", "BHM00109")
+dim(dat_taxa)
+dat_taxa = dat_taxa[,-which(colnames(dat_taxa) %in% sample_exclude)]
+dim(dat_taxa)
+
+
+dat_meta = meta_dat[rownames(meta_dat) %in% colnames(dat_taxa),]
+dat_meta = subset(dat_meta, diagnosis != "Unknown" & diagnosis != "NR" & diagnosis != "Crystal Arthritis" & diagnosis != "Unclass" & diagnosis != "other" & diagnosis != "CSA")
+
+#Create a smaller file to run stats aganist
+str(dat_meta)
+stat_meta = dat_meta
+stat_meta$crp = NULL
+stat_meta$Sample = NULL
+str(stat_meta)
+row.names(stat_meta) = stat_meta$iamc_id
+stat_meta$iamc_id = NULL
+
+```
+
+\newpage
+
+```{r meta_dat, include = FALSE}
+
+dat_meta$drug = gsub("Not recorded/Not known", "Not recorded", dat_meta$drug)
+dat_meta$diagnosis = ordered(dat_meta$diagnosis, c("HC", "NIJP", "AS", "RA", "PsA"))
+dat_meta$inflammation = ordered(dat_meta$inflammation, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+dat_meta$diagnosis = ordered(dat_meta$diagnosis, c("HC", "NIJP", "AS", "PsA", "RA"))
+dat_meta$crp_corrected =  as.numeric(dat_meta$crp_corrected)
+dat_meta$smoking = recode(dat_meta$smoking_current_ever_never, "1" = "Current", "2" = "Ever", "3" = "Never", "-1" = "Not recorded", .default = "Not recorded")
+dat_meta$smoking = as.character(dat_meta$smoking)
+dat_meta$smoking[is.na(dat_meta$smoking)] = "Not recorded"
+col_smoke = c("Current" = "#DC143C", "Ever" = "#FF7F50", "Never" = "#66CDAA", "Not recorded" = "#696969")
+
+bhm_dat = bhm[row.names(bhm) %in% row.names(dat_meta), ]
+bhm_dat$inflammation = dat_meta[match(row.names(bhm_dat), row.names(dat_meta)), "inflammation"]
+bhm_dat$anti_ccp_status = recode(bhm_dat$anti_ccp_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$anti_ccp_status[is.na(bhm_dat$anti_ccp_status)] = "Not recorded"
+bhm_dat$anti_ccp_status = ordered(bhm_dat$anti_ccp_status, c("Positive", "Negative", "Not recorded"))
+bhm_dat$rf = recode(bhm_dat$rf_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$rf[is.na(bhm_dat$rf)] = "Not recorded"
+bhm_dat$arthritis_type = droplevels(as.factor(bhm_dat$arthritis_type))
+bhm_dat$arthritis_type = as.character(bhm_dat$arthritis_type)
+bhm_dat$arthritis_type = mgsub(bhm_dat$arthritis_type, c("Healthy Control", "Non-Inflammatory Joint Pain"), c("HC", "NIJP"))
+bhm_dat$rf = ordered(bhm_dat$rf, c("Positive", "Negative", "Not recorded"))
+
+oas_dat = oas[row.names(oas) %in% row.names(dat_meta), ]
+oas_dat$inflammation = dat_meta[match(row.names(oas_dat), row.names(dat_meta)), "inflammation"]
+oas_dat$hla_b27 = as.factor(oas_dat$hla_b27)
+oas_dat$hla_b27 = droplevels(oas_dat$hla_b27)
+oas_dat$hla_b27 = gsub(" $", "", oas_dat$hla_b27)
+oas_dat$hla = recode(oas_dat$hla_b27, "negative" = "Negative", "Negative" = "Negative", "NEGATIVE " = "Negative", "Not done/Not known" = "Not recorded", "Not relevant" = "Not recorded", "postive" = "Positive", "Positive" = "Positive", "POSITIVE" = "Positive", "Positive ('rare' homozygote)" = "Positive", .default = "Not recorded")
+oas_dat$hla = ordered(oas_dat$hla, c("Positive", "Negative", "Not recorded"))
+
+stat_meta$smoking = recode(stat_meta$smoking_current_ever_never, "1" = "Current", "2" = "Ever", "3" = "Never", "-1" = "Not recorded", .default = "Not recorded")
+stat_meta$smoking = as.character(stat_meta$smoking)
+stat_meta$smoking[is.na(stat_meta$smoking)] = "Not recorded"
+stat_meta$smoking_current_ever_never = NULL
+
+stat_meta$drug = gsub("Not recorded/Not known", "Not recorded", stat_meta$drug)
+stat_meta$diagnosis = as.character(stat_meta$diagnosis)
+stat_meta$inflammation = as.character(stat_meta$inflammation)
+
+```
+
+
+\newpage
+#StrainPhlAn
+
+```{r read_in_strainphlan, include= FALSE}
+#E.coli
+library(phytools)
+e_coli = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Escherichia_coli.fasta")
+names(e_coli) = gsub("_bowtie2", "", names(e_coli))
+dist_ecoli = dist.dna(e_coli, model = "K80")
+mat_dis_ecoli = as.matrix(dist_ecoli)
+
+#Dorea.longicatena
+d_long = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Dorea_longicatena.fasta")
+names(d_long) = gsub("_bowtie2", "", names(d_long))
+dist_dlong = dist.dna(d_long, model = "K80")
+mat_dis_dlong = as.matrix(dist_dlong)
+
+#Eubacterium.rectale
+e_rect = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Eubacterium_rectale.fasta")
+names(e_rect) = gsub("_bowtie2", "", names(e_rect))
+dist_erect = dist.dna(e_rect, model = "K80")
+mat_dis_erect= as.matrix(dist_erect)
+
+#Roseburia.intestinalis
+r_intest = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Roseburia_intestinalis.fasta")
+names(r_intest) = gsub("_bowtie2", "", names(r_intest))
+dist_rintest = dist.dna(r_intest, model = "K80")
+mat_dis_rintest = as.matrix(dist_rintest)
+
+#Ruminococcus.bromii
+r_bromii = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Ruminococcus_bromii.fasta")
+names(r_bromii) = gsub("_bowtie2", "", names(r_bromii))
+dist_rbromii = dist.dna(r_bromii, model = "K80")
+mat_dis_rbromii = as.matrix(dist_rbromii)
+
+#Ruminococcus.sp.5.1.39BFAA
+r_sp = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Ruminococcus_sp_5_1_39BFAA.fasta")
+names(r_sp) = gsub("_bowtie2", "", names(r_sp))
+dist_rsp = dist.dna(r_sp, model = "K80")
+mat_dis_rsp = as.matrix(dist_rsp)
+
+#Streptococcus.salivarius
+s_sal = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Streptococcus_salivarius.fasta")
+names(s_sal) = gsub("_bowtie2", "", names(s_sal))
+dist_ssal = dist.dna(s_sal, model = "K80")
+mat_dis_ssal = as.matrix(dist_ssal)
+
+#Sutterella.wadsworthensis
+s_wad = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Sutterella_wadsworthensis.fasta")
+names(s_wad) = gsub("_bowtie2", "", names(s_wad))
+dist_swad = dist.dna(s_wad, model = "K80")
+mat_dis_swad = as.matrix(dist_swad)
+
+#Alistipes.onderdonkii
+a_onder = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Alistipes_onderdonkii.fasta")
+names(a_onder) = gsub("_bowtie2", "", names(a_onder))
+dist_aonder = dist.dna(a_onder, model = "K80")
+mat_dis_aonder = as.matrix(dist_aonder)
+
+#Alistipes.putredinis
+a_put = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Alistipes_putredinis.fasta")
+names(a_put) = gsub("_bowtie2", "", names(a_put))
+dist_aput = dist.dna(a_put, model = "K80")
+mat_dis_aput = as.matrix(dist_aput)
+
+#Bacteroides.dorei
+b_dorei = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bacteroides_dorei.fasta")
+names(b_dorei) = gsub("_bowtie2", "", names(b_dorei))
+dist_bdorei = dist.dna(b_dorei, model = "K80")
+mat_dis_bdorei = as.matrix(dist_bdorei)
+
+#Bacteroides.ovatus
+b_ovatus = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bacteroides_ovatus.fasta")
+names(b_ovatus) = gsub("_bowtie2", "", names(b_ovatus))
+dist_bovatus = dist.dna(b_ovatus, model = "K80")
+mat_dis_bovatus = as.matrix(dist_bovatus)
+
+#Bacteroides.stercoris
+b_ster = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bacteroides_stercoris.fasta")
+names(b_ster) = gsub("_bowtie2", "", names(b_ster))
+dist_bster = dist.dna(b_ster, model = "K80")
+mat_dis_bster = as.matrix(dist_bster)
+
+#Bacteroides.uniformis
+b_uni = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bacteroides_uniformis.fasta")
+names(b_uni) = gsub("_bowtie2", "", names(b_uni))
+dist_buni = dist.dna(b_uni, model = "K80")
+mat_dis_buni = as.matrix(dist_buni)
+
+#Bacteroides.vulgatus
+b_vul = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bacteroides_vulgatus.fasta")
+names(b_vul) = gsub("_bowtie2", "", names(b_vul))
+dist_bvul = dist.dna(b_vul, model = "K80")
+mat_dis_bvul = as.matrix(dist_bvul)
+
+#Bifidobacterium.adolescentis
+b_ado = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bifidobacterium_adolescentis.fasta")
+names(b_ado) = gsub("_bowtie2", "", names(b_ado))
+dist_bado = dist.dna(b_ado, model = "K80")
+mat_dis_bado = as.matrix(dist_bado)
+
+#Bifidobacterium.longum
+b_long = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bifidobacterium_longum.fasta")
+names(b_long) = gsub("_bowtie2", "", names(b_long))
+dist_blong = dist.dna(b_long, model = "K80")
+mat_dis_blong = as.matrix(dist_blong)
+
+#Coprococcus.sp.ART55.1
+c_sp = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Coprococcus_sp_ART55_1.fasta")
+names(c_sp) = gsub("_bowtie2", "", names(c_sp))
+dist_csp = dist.dna(c_sp, model = "K80")
+mat_dis_csp = as.matrix(dist_csp)
+
+#Dialister.invisus
+d_invisus = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Dialister_invisus.fasta")
+names(d_invisus) = gsub("_bowtie2", "", names(d_invisus))
+dist_dinvisus = dist.dna(d_invisus, model = "K80")
+mat_dis_dinvisus = as.matrix(dist_dinvisus)
+
+#s__Streptococcus_vestibularis
+s_vest = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Streptococcus_vestibularis.fasta")
+names(s_vest) = gsub("_bowtie2", "", names(s_vest))
+dist_svest = dist.dna(s_vest, model = "K80")
+mat_dis_svest = as.matrix(dist_svest)
+
+#s__Streptococcus_parasanguinis
+s_para = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Streptococcus_parasanguinis.fasta")
+names(s_para) = gsub("_bowtie2", "", names(s_para))
+dist_spara = dist.dna(s_para, model = "K80")
+mat_dis_spara = as.matrix(dist_spara)
+
+#s__Ruminococcus_torques
+r_torq = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Ruminococcus_torques.fasta")
+names(r_torq) = gsub("_bowtie2", "", names(r_torq))
+dist_rtorq = dist.dna(r_torq, model = "K80")
+mat_dis_rtorq = as.matrix(dist_rtorq)
+
+#s__Ruminococcus_gnavus
+r_gnav = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Ruminococcus_gnavus.fasta")
+names(r_gnav) = gsub("_bowtie2", "", names(r_gnav))
+dist_rgnav = dist.dna(r_gnav, model = "K80")
+mat_dis_rgnav = as.matrix(dist_rgnav)
+
+#s__Faecalibacterium
+f_prau = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Faecalibacterium.fasta")
+names(f_prau) = gsub("_bowtie2", "", names(f_prau))
+dist_fprau = dist.dna(f_prau, model = "K80")
+mat_dis_fprau = as.matrix(dist_fprau)
+
+#s__Bacteroides_vulgatus
+b_vul = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bacteroides_vulgatus.fasta")
+names(b_vul) = gsub("_bowtie2", "", names(b_vul))
+dist_bvul = dist.dna(b_vul, model = "K80")
+mat_dis_bvul = as.matrix(dist_bvul)
+
+#s__Bifidobacterium_dentium
+b_dent = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Bifidobacterium_dentium.fasta")
+names(b_dent) = gsub("_bowtie2", "", names(b_dent))
+dist_bdent = dist.dna(b_dent, model = "K80")
+mat_dis_bdent = as.matrix(dist_bdent)
+
+#s__Coprococcus_comes
+c_come = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Coprococcus_comes.fasta")
+names(c_come) = gsub("_bowtie2", "", names(c_come))
+dist_ccome = dist.dna(c_come, model = "K80")
+mat_dis_ccome = as.matrix(dist_ccome)
+
+#s__Methanobrevibacter_smithii
+m_smith = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Methanobrevibacter_smithii.fasta")
+names(m_smith) = gsub("_bowtie2", "", names(m_smith))
+dist_msmith = dist.dna(m_smith, model = "K80")
+mat_dis_msmith = as.matrix(dist_msmith)
+
+#s__Streptococcus_mutans
+s_mut = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Streptococcus_mutans.fasta")
+names(s_mut) = gsub("_bowtie2", "", names(s_mut))
+dist_smut = dist.dna(s_mut, model = "K80")
+mat_dis_smut = as.matrix(dist_smut)
+
+#s__Streptococcus_anginosus
+s_ang = read.FASTA("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/s__Streptococcus_anginosus.fasta")
+names(s_ang) = gsub("_bowtie2", "", names(s_ang))
+dist_sang = dist.dna(s_ang, model = "K80")
+mat_dis_sang = as.matrix(dist_sang)
+
+
+```
+
+#Phylogenetic distance 
+##E.coli
+
+```{r best_tree_ecoli_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+library(ggtree)
+ecoli_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Escherichia_coli.tree")
+ecoli_tree$tip.label = gsub("_bowtie2", "", ecoli_tree$tip.label)
+meta = stat_meta[, c(12, 14)]
+meta$SampleID = row.names(meta)
+meta = meta[, c(3, 1:2)]
+meta$diagnosis = as.character(meta$diagnosis)
+meta$inflammation = as.character(meta$inflammation)
+
+ecoli_gg = ggtree(ecoli_tree)
+ecoli_gg = ecoli_gg %<+% meta
+ecoli_gg$data$diagnosis = ifelse(is.na(ecoli_gg$data$diagnosis), "Reference", ecoli_gg$data$diagnosis)
+
+col_ref = c("Reference" = "#FFFF00")
+col_diagnosis = append(col_diagnosis, col_ref)
+
+ecoli_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_ecoli_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+ecoli_gg$data$inflammation = ifelse(is.na(ecoli_gg$data$inflammation), "Reference", ecoli_gg$data$inflammation)
+col_inflammation = append(col_inflammation, col_ref)
+
+ecoli_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_e_coli_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_ecoli, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(row.names(cap) == "GCF_000354895", "Reference", cap$inflammation)
+cap$diagnosis = ifelse(row.names(cap) == "GCF_000354895", "Reference", cap$diagnosis)
+s = summary(pc)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance E.coli",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_e_coli_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance E.coli",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+###Statistics  
+
+```{r statistic_ecoli_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(e_coli), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(e_coli))
+list = append(list, list2)
+ecoli_sub = list.remove(e_coli, list)
+dist_ecoli_sub = dist.dna(ecoli_sub, model = "K80")
+
+temp_meta = cbind(names(ecoli_sub), stat_meta[match(names(ecoli_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_ecoli_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_ecoli = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_ecoli = as.data.frame(t(univar_res_ecoli))
+names(univar_res_ecoli) = c("P-Value", "R2")
+univar_res_ecoli$`P-Value` = as.numeric(univar_res_ecoli$`P-Value`)
+univar_res_ecoli$R2 = as.numeric(univar_res_ecoli$R2)
+univar_res_ecoli$p_adj = p.adjust(univar_res_ecoli$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_ecoli$clinical = list_rownames
+
+univar_res_ecoli$stars = cut(univar_res_ecoli$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_ecoli, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_ecoli = melt(mat_dis_ecoli)
+df_ecoli = df_ecoli[df_ecoli$Var1 != df_ecoli$Var2, ]
+df_ecoli$HC = stat_meta[match(df_ecoli$Var1, row.names(stat_meta)), "diagnosis"]
+df_ecoli$diagnosis = stat_meta[match(df_ecoli$Var2, row.names(stat_meta)), "diagnosis"]
+df_ecoli = subset(df_ecoli, HC == "HC")
+
+df_ecoli = subset(df_ecoli, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_ecoli$diagnosis = factor(df_ecoli$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_ecoli, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_ecoli$Species = "E.coli"
+
+```
+
+
+\newpage
+##Dorea longicatena
+
+```{r best_tree_dlong_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+library(ggtree)
+dlong_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Dorea_longicatena.tree")
+dlong_tree$tip.label = gsub("_bowtie2", "", dlong_tree$tip.label)
+
+dlong_gg = ggtree(dlong_tree)
+dlong_gg = dlong_gg %<+% meta
+dlong_gg$data$diagnosis = ifelse(is.na(dlong_gg$data$diagnosis), "Reference", dlong_gg$data$diagnosis)
+
+dlong_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_dlong_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+dlong_gg$data$inflammation = ifelse(is.na(dlong_gg$data$inflammation), "Reference", dlong_gg$data$inflammation)
+
+dlong_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_dlong_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_dlong, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(row.names(cap) == "GCF_000154065", "Reference", cap$inflammation)
+cap$diagnosis = ifelse(row.names(cap) == "GCF_000154065", "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance D.longicatena",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_dlong_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance D.longicatena",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+\newpage
+###Statistics  
+
+```{r statistic_dlong_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(d_long), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(d_long))
+list = append(list, list2)
+dlong_sub = list.remove(d_long, list)
+dist_dlong_sub = dist.dna(dlong_sub, model = "K80")
+
+temp_meta = cbind(names(dlong_sub), stat_meta[match(names(dlong_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_dlong_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_dlong = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_dlong = as.data.frame(t(univar_res_dlong))
+names(univar_res_dlong) = c("P-Value", "R2")
+univar_res_dlong$`P-Value` = as.numeric(univar_res_dlong$`P-Value`)
+univar_res_dlong$R2 = as.numeric(univar_res_dlong$R2)
+univar_res_dlong$p_adj = p.adjust(univar_res_dlong$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_dlong$clinical = list_rownames
+
+univar_res_dlong$stars = cut(univar_res_dlong$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_dlong, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_dlong = melt(mat_dis_dlong)
+df_dlong = df_dlong[df_dlong$Var1 != df_dlong$Var2, ]
+df_dlong$HC = stat_meta[match(df_dlong$Var1, row.names(stat_meta)), "diagnosis"]
+df_dlong$diagnosis = stat_meta[match(df_dlong$Var2, row.names(stat_meta)), "diagnosis"]
+df_dlong = subset(df_dlong, HC == "HC")
+
+df_dlong = subset(df_dlong, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_dlong$diagnosis = factor(df_dlong$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_dlong, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_dlong$Species = "D.longicatena"
+
+```
+
+
+\newpage
+##Eubaterium rectale
+
+```{r best_tree_erect_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 10}
+library(ggtree)
+erect_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Eubacterium_rectale.tree")
+erect_tree$tip.label = gsub("_bowtie2", "", erect_tree$tip.label)
+
+erect_gg = ggtree(erect_tree)
+erect_gg = erect_gg %<+% meta
+erect_gg$data$diagnosis = ifelse(is.na(erect_gg$data$diagnosis), "Reference", erect_gg$data$diagnosis)
+
+erect_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_erect_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 10}
+erect_gg$data$inflammation = ifelse(is.na(erect_gg$data$inflammation), "Reference", erect_gg$data$inflammation)
+
+erect_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_erect_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_erect, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance E. rectale",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_erect_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance E. rectale",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_erect_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(e_rect), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(e_rect))
+list = append(list, list2)
+erect_sub = list.remove(e_rect, list)
+dist_erect_sub = dist.dna(erect_sub, model = "K80")
+
+temp_meta = cbind(names(erect_sub), stat_meta[match(names(erect_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_erect_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_erect = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_erect = as.data.frame(t(univar_res_erect))
+names(univar_res_erect) = c("P-Value", "R2")
+univar_res_erect$`P-Value` = as.numeric(univar_res_erect$`P-Value`)
+univar_res_erect$R2 = as.numeric(univar_res_erect$R2)
+univar_res_erect$p_adj = p.adjust(univar_res_erect$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_erect$clinical = list_rownames
+
+univar_res_erect$stars = cut(univar_res_erect$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_erect, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_erect = melt(mat_dis_erect)
+df_erect = df_erect[df_erect$Var1 != df_erect$Var2, ]
+df_erect$HC = stat_meta[match(df_erect$Var1, row.names(stat_meta)), "diagnosis"]
+df_erect$diagnosis = stat_meta[match(df_erect$Var2, row.names(stat_meta)), "diagnosis"]
+df_erect = subset(df_erect, HC == "HC")
+
+df_erect = subset(df_erect, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_erect$diagnosis = factor(df_erect$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_erect, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_erect$Species = "E.rectale"
+
+```
+
+
+\newpage
+##Roseburia intestinalis  
+
+```{r best_tree_rintest_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+library(ggtree)
+rintest_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Roseburia_intestinalis.tree")
+rintest_tree$tip.label = gsub("_bowtie2", "", rintest_tree$tip.label)
+
+rintest_gg = ggtree(rintest_tree)
+rintest_gg = rintest_gg %<+% meta
+rintest_gg$data$diagnosis = ifelse(is.na(rintest_gg$data$diagnosis), "Reference", rintest_gg$data$diagnosis)
+
+rintest_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_rintest_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+rintest_gg$data$inflammation = ifelse(is.na(rintest_gg$data$inflammation), "Reference", rintest_gg$data$inflammation)
+
+rintest_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_rintest_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(e_coli), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(e_coli))
+list = append(list, list2)
+rintest_sub = list.remove(e_coli, list)
+dist_rintest_sub = dist.dna(rintest_sub, model = "K80")
+
+temp_meta = cbind(names(rintest_sub), stat_meta[match(names(rintest_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_rintest_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_rintest = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_rintest = as.data.frame(t(univar_res_rintest))
+names(univar_res_rintest) = c("P-Value", "R2")
+univar_res_rintest$`P-Value` = as.numeric(univar_res_rintest$`P-Value`)
+univar_res_rintest$R2 = as.numeric(univar_res_rintest$R2)
+univar_res_rintest$p_adj = p.adjust(univar_res_rintest$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_rintest$clinical = list_rownames
+
+univar_res_rintest$stars = cut(univar_res_rintest$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_rintest, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_rintest = melt(mat_dis_rintest)
+df_rintest = df_rintest[df_rintest$Var1 != df_rintest$Var2, ]
+df_rintest$HC = stat_meta[match(df_rintest$Var1, row.names(stat_meta)), "diagnosis"]
+df_rintest$diagnosis = stat_meta[match(df_rintest$Var2, row.names(stat_meta)), "diagnosis"]
+df_rintest = subset(df_rintest, HC == "HC")
+
+df_rintest = subset(df_rintest, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_rintest$diagnosis = factor(df_rintest$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_rintest, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_rintest$Species = "R. intestinalis"
+
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_rintest_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_rintest, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance R. intestinalis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_rintest_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance R. intestinalis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+\newpage
+##Ruminococcus bromii
+
+```{r best_tree_rbromii_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+library(ggtree)
+rbromii_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Ruminococcus_bromii.tree")
+rbromii_tree$tip.label = gsub("_bowtie2", "", rbromii_tree$tip.label)
+
+rbromii_gg = ggtree(rbromii_tree)
+rbromii_gg = rbromii_gg %<+% meta
+rbromii_gg$data$diagnosis = ifelse(is.na(rbromii_gg$data$diagnosis), "Reference", rbromii_gg$data$diagnosis)
+
+rbromii_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_rbromii_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+rbromii_gg$data$inflammation = ifelse(is.na(rbromii_gg$data$inflammation), "Reference", rbromii_gg$data$inflammation)
+
+rbromii_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_rbromii_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_rbromii, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance R. bromii",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_rbromii_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance R. bromii",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_rbromii, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_rbromii = melt(mat_dis_rbromii)
+df_rbromii = df_rbromii[df_rbromii$Var1 != df_rbromii$Var2, ]
+df_rbromii$HC = stat_meta[match(df_rbromii$Var1, row.names(stat_meta)), "diagnosis"]
+df_rbromii$diagnosis = stat_meta[match(df_rbromii$Var2, row.names(stat_meta)), "diagnosis"]
+df_rbromii = subset(df_rbromii, HC == "HC")
+
+df_rbromii = subset(df_rbromii, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_rbromii$diagnosis = factor(df_rbromii$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_rbromii, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_rbromii$Species = "R.bromii"
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_rbromii_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(r_bromii), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(r_bromii))
+list = append(list, list2)
+rbromii_sub = list.remove(r_bromii, list)
+dist_rbromii_sub = dist.dna(rbromii_sub, model = "K80")
+
+temp_meta = cbind(names(rbromii_sub), stat_meta[match(names(rbromii_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_rbromii_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+univar_res_rbromii = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_rbromii = as.data.frame(t(univar_res_rbromii))
+names(univar_res_rbromii) = c("P-Value", "R2")
+univar_res_rbromii$`P-Value` = as.numeric(univar_res_rbromii$`P-Value`)
+univar_res_rbromii$R2 = as.numeric(univar_res_rbromii$R2)
+univar_res_rbromii$p_adj = p.adjust(univar_res_rbromii$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_rbromii$clinical = list_rownames
+
+univar_res_rbromii$stars = cut(univar_res_rbromii$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Ruminococcus sp
+###Distance using Kimura's 2-parameters distance  
+
+```{r pcoa_rsp_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_rsp, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Ruminococcus sp",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_rsp_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Ruminococcus sp",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+##Streptococcus salivarius
+
+```{r best_tree_ssal_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+library(ggtree)
+ssal_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Streptococcus_salivarius.tree")
+ssal_tree$tip.label = gsub("_bowtie2", "", ssal_tree$tip.label)
+
+ssal_gg = ggtree(ssal_tree)
+ssal_gg = ssal_gg %<+% meta
+ssal_gg$data$diagnosis = ifelse(is.na(ssal_gg$data$diagnosis), "Reference", ssal_gg$data$diagnosis)
+
+ssal_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_ssal_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+ssal_gg$data$inflammation = ifelse(is.na(ssal_gg$data$inflammation), "Reference", ssal_gg$data$inflammation)
+
+ssal_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_ssal_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_ssal, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance S. salivarius",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_ssal_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance S. salivarius",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_ssal, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_ssal = melt(mat_dis_ssal)
+df_ssal = df_ssal[df_ssal$Var1 != df_ssal$Var2, ]
+df_ssal$HC = stat_meta[match(df_ssal$Var1, row.names(stat_meta)), "diagnosis"]
+df_ssal$diagnosis = stat_meta[match(df_ssal$Var2, row.names(stat_meta)), "diagnosis"]
+df_ssal = subset(df_ssal, HC == "HC")
+
+df_ssal = subset(df_ssal, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_ssal$diagnosis = factor(df_ssal$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_ssal, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_ssal$Species = "S.salivarius"
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_ssal_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(s_sal), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(s_sal))
+list = append(list, list2)
+ssal_sub = list.remove(s_sal, list)
+dist_ssal_sub = dist.dna(ssal_sub, model = "K80")
+
+temp_meta = cbind(names(ssal_sub), stat_meta[match(names(ssal_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_ssal_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_ssal = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_ssal = as.data.frame(t(univar_res_ssal))
+names(univar_res_ssal) = c("P-Value", "R2")
+univar_res_ssal$`P-Value` = as.numeric(univar_res_ssal$`P-Value`)
+univar_res_ssal$R2 = as.numeric(univar_res_ssal$R2)
+univar_res_ssal$p_adj = p.adjust(univar_res_ssal$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_ssal$clinical = list_rownames
+
+univar_res_ssal$stars = cut(univar_res_ssal$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Sutterella wadsworthensis
+
+```{r best_tree_swad_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+library(ggtree)
+swad_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Sutterella_wadsworthensis.tree")
+swad_tree$tip.label = gsub("_bowtie2", "", swad_tree$tip.label)
+
+swad_gg = ggtree(swad_tree)
+swad_gg = swad_gg %<+% meta
+swad_gg$data$diagnosis = ifelse(is.na(swad_gg$data$diagnosis), "Reference", swad_gg$data$diagnosis)
+
+swad_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_swad_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+swad_gg$data$inflammation = ifelse(is.na(swad_gg$data$inflammation), "Reference", swad_gg$data$inflammation)
+
+swad_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_swad_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_swad, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance S. wadsworthensis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_swad_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance S. wadsworthensis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_swad, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_swad = melt(mat_dis_swad)
+df_swad = df_swad[df_swad$Var1 != df_swad$Var2, ]
+df_swad$HC = stat_meta[match(df_swad$Var1, row.names(stat_meta)), "diagnosis"]
+df_swad$diagnosis = stat_meta[match(df_swad$Var2, row.names(stat_meta)), "diagnosis"]
+df_swad = subset(df_swad, HC == "HC")
+
+df_swad = subset(df_swad, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_swad$diagnosis = factor(df_swad$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_swad, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_swad$Species = "S.wadsworthensis"
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_swad_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(s_wad), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(s_wad))
+list = append(list, list2)
+swad_sub = list.remove(s_wad, list)
+dist_swad_sub = dist.dna(swad_sub, model = "K80")
+
+temp_meta = cbind(names(swad_sub), stat_meta[match(names(swad_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_swad_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_swad = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_swad = as.data.frame(t(univar_res_swad))
+names(univar_res_swad) = c("P-Value", "R2")
+univar_res_swad$`P-Value` = as.numeric(univar_res_swad$`P-Value`)
+univar_res_swad$R2 = as.numeric(univar_res_swad$R2)
+univar_res_swad$p_adj = p.adjust(univar_res_swad$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_swad$clinical = list_rownames
+
+univar_res_swad$stars = cut(univar_res_swad$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Alistipes putredinis  
+
+```{r best_tree_aput_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+library(ggtree)
+aput_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Alistipes_putredinis.tree")
+aput_tree$tip.label = gsub("_bowtie2", "", aput_tree$tip.label)
+
+aput_gg = ggtree(aput_tree)
+aput_gg = aput_gg %<+% meta
+aput_gg$data$diagnosis = ifelse(is.na(aput_gg$data$diagnosis), "Reference", aput_gg$data$diagnosis)
+
+aput_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_aput_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+aput_gg$data$inflammation = ifelse(is.na(aput_gg$data$inflammation), "Reference", aput_gg$data$inflammation)
+
+aput_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_aput_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(a_put), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(a_put))
+list = append(list, list2)
+aput_sub = list.remove(a_put, list)
+dist_aput_sub = dist.dna(aput_sub, model = "K80")
+
+temp_meta = cbind(names(aput_sub), stat_meta[match(names(aput_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_aput_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_aput = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_aput = as.data.frame(t(univar_res_aput))
+names(univar_res_aput) = c("P-Value", "R2")
+univar_res_aput$`P-Value` = as.numeric(univar_res_aput$`P-Value`)
+univar_res_aput$R2 = as.numeric(univar_res_aput$R2)
+univar_res_aput$p_adj = p.adjust(univar_res_aput$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_aput$clinical = list_rownames
+
+univar_res_aput$stars = cut(univar_res_aput$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_aput_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_aput, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Alistipes putredinis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_aput_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Alistipes putredinis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_aput, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_aput = melt(mat_dis_aput)
+df_aput = df_aput[df_aput$Var1 != df_aput$Var2, ]
+df_aput$HC = stat_meta[match(df_aput$Var1, row.names(stat_meta)), "diagnosis"]
+df_aput$diagnosis = stat_meta[match(df_aput$Var2, row.names(stat_meta)), "diagnosis"]
+df_aput = subset(df_aput, HC == "HC")
+
+df_aput = subset(df_aput, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_aput$diagnosis = factor(df_aput$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_aput, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_aput$Species = "A.putredinis"
+
+```
+
+
+\newpage
+##Bacteroides dorei
+
+```{r best_tree_bdorei_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+library(ggtree)
+bdorei_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Bacteroides_dorei.tree")
+bdorei_tree$tip.label = gsub("_bowtie2", "", bdorei_tree$tip.label)
+
+bdorei_gg = ggtree(bdorei_tree)
+bdorei_gg = bdorei_gg %<+% meta
+bdorei_gg$data$diagnosis = ifelse(is.na(bdorei_gg$data$diagnosis), "Reference", bdorei_gg$data$diagnosis)
+
+bdorei_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_bdorei_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+bdorei_gg$data$inflammation = ifelse(is.na(bdorei_gg$data$inflammation), "Reference", bdorei_gg$data$inflammation)
+
+bdorei_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_bdorei_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_bdorei, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Bacteroides dorei",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_bdorei_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Bacteroides dorei",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_bdorei, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_bdorei = melt(mat_dis_bdorei)
+df_bdorei = df_bdorei[df_bdorei$Var1 != df_bdorei$Var2, ]
+df_bdorei$HC = stat_meta[match(df_bdorei$Var1, row.names(stat_meta)), "diagnosis"]
+df_bdorei$diagnosis = stat_meta[match(df_bdorei$Var2, row.names(stat_meta)), "diagnosis"]
+df_bdorei = subset(df_bdorei, HC == "HC")
+
+df_bdorei = subset(df_bdorei, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_bdorei$diagnosis = factor(df_bdorei$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_bdorei, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_bdorei$Species = "B.dorei"
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_bdorei_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(b_dorei), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(b_dorei))
+list = append(list, list2)
+bdorei_sub = list.remove(b_dorei, list)
+dist_bdorei_sub = dist.dna(bdorei_sub, model = "K80")
+
+temp_meta = cbind(names(bdorei_sub), stat_meta[match(names(bdorei_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_bdorei_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_bdorei = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_bdorei = as.data.frame(t(univar_res_bdorei))
+names(univar_res_bdorei) = c("P-Value", "R2")
+univar_res_bdorei$`P-Value` = as.numeric(univar_res_bdorei$`P-Value`)
+univar_res_bdorei$R2 = as.numeric(univar_res_bdorei$R2)
+univar_res_bdorei$p_adj = p.adjust(univar_res_bdorei$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_bdorei$clinical = list_rownames
+
+univar_res_bdorei$stars = cut(univar_res_bdorei$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Bacteroides ovatus  
+
+```{r best_tree_bovatus_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+library(ggtree)
+bovatus_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Bacteroides_ovatus.tree")
+bovatus_tree$tip.label = gsub("_bowtie2", "", bovatus_tree$tip.label)
+
+bovatus_gg = ggtree(bovatus_tree)
+bovatus_gg = bovatus_gg %<+% meta
+bovatus_gg$data$diagnosis = ifelse(is.na(bovatus_gg$data$diagnosis), "Reference", bovatus_gg$data$diagnosis)
+
+bovatus_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_bovatus_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+bovatus_gg$data$inflammation = ifelse(is.na(bovatus_gg$data$inflammation), "Reference", bovatus_gg$data$inflammation)
+
+bovatus_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_bovatus_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_bovatus, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Bacteroides ovatus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_bovatus_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Bacteroides ovatus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_bovatus, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_bovatus = melt(mat_dis_bovatus)
+df_bovatus = df_bovatus[df_bovatus$Var1 != df_bovatus$Var2, ]
+df_bovatus$HC = stat_meta[match(df_bovatus$Var1, row.names(stat_meta)), "diagnosis"]
+df_bovatus$diagnosis = stat_meta[match(df_bovatus$Var2, row.names(stat_meta)), "diagnosis"]
+df_bovatus = subset(df_bovatus, HC == "HC")
+
+df_bovatus = subset(df_bovatus, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_bovatus$diagnosis = factor(df_bovatus$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_bovatus, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_bovatus$Species = "B.ovatus"
+
+```
+
+
+\newpage
+###Statistics  
+
+```{r statistic_bovatus_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(b_ovatus), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(b_ovatus))
+list = append(list, list2)
+bovatus_sub = list.remove(b_ovatus, list)
+dist_bovatus_sub = dist.dna(bovatus_sub, model = "K80")
+
+temp_meta = cbind(names(bovatus_sub), stat_meta[match(names(bovatus_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_bovatus_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_bovatus = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_bovatus = as.data.frame(t(univar_res_bovatus))
+names(univar_res_bovatus) = c("P-Value", "R2")
+univar_res_bovatus$`P-Value` = as.numeric(univar_res_bovatus$`P-Value`)
+univar_res_bovatus$R2 = as.numeric(univar_res_bovatus$R2)
+univar_res_bovatus$p_adj = p.adjust(univar_res_bovatus$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_bovatus$clinical = list_rownames
+
+univar_res_bovatus$stars = cut(univar_res_bovatus$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Bacteroides stercoris
+
+```{r best_tree_bster_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+
+bster_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Bacteroides_stercoris.tree")
+bster_tree$tip.label = gsub("_bowtie2", "", bster_tree$tip.label)
+
+bster_gg = ggtree(bster_tree)
+bster_gg = bster_gg %<+% meta
+bster_gg$data$diagnosis = ifelse(is.na(bster_gg$data$diagnosis), "Reference", bster_gg$data$diagnosis)
+
+bster_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_bster_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+bster_gg$data$inflammation = ifelse(is.na(bster_gg$data$inflammation), "Reference", bster_gg$data$inflammation)
+
+bster_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_bstercoris_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_bster, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Bacteroides stercoris",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_bstercoris_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Bacteroides stercoris",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_bster, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_bster = melt(mat_dis_bster)
+df_bster = df_bster[df_bster$Var1 != df_bster$Var2, ]
+df_bster$HC = stat_meta[match(df_bster$Var1, row.names(stat_meta)), "diagnosis"]
+df_bster$diagnosis = stat_meta[match(df_bster$Var2, row.names(stat_meta)), "diagnosis"]
+df_bster = subset(df_bster, HC == "HC")
+
+df_bster = subset(df_bster, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_bster$diagnosis = factor(df_bster$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_bster, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_bster$Species = "B.stercoris"
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_bster_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(b_ster), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names((b_ster)))
+list = append(list, list2)
+bster_sub = list.remove(b_ster, list)
+dist_bster_sub = dist.dna(bster_sub, model = "K80")
+
+temp_meta = cbind(names(bster_sub), stat_meta[match(names(bster_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_bster_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_bster = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_bster = as.data.frame(t(univar_res_bster))
+names(univar_res_bster) = c("P-Value", "R2")
+univar_res_bster$`P-Value` = as.numeric(univar_res_bster$`P-Value`)
+univar_res_bster$R2 = as.numeric(univar_res_bster$R2)
+univar_res_bster$p_adj = p.adjust(univar_res_bster$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_bster$clinical = list_rownames
+
+univar_res_bster$stars = cut(univar_res_bster$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Bacteroides uniformis
+
+```{r best_tree_buni_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+library(ggtree)
+buni_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Bacteroides_uniformis.tree")
+buni_tree$tip.label = gsub("_bowtie2", "", buni_tree$tip.label)
+
+buni_gg = ggtree(buni_tree)
+buni_gg = buni_gg %<+% meta
+buni_gg$data$diagnosis = ifelse(is.na(buni_gg$data$diagnosis), "Reference", buni_gg$data$diagnosis)
+
+buni_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_buni_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+buni_gg$data$inflammation = ifelse(is.na(buni_gg$data$inflammation), "Reference", buni_gg$data$inflammation)
+
+buni_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance
+
+```{r pcoa_buniformis_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_buni, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Bacteroides uniformis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_buniformis_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Bacteroides uniformis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_buni, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_buni = melt(mat_dis_buni)
+df_buni = df_buni[df_buni$Var1 != df_buni$Var2, ]
+df_buni$HC = stat_meta[match(df_buni$Var1, row.names(stat_meta)), "diagnosis"]
+df_buni$diagnosis = stat_meta[match(df_buni$Var2, row.names(stat_meta)), "diagnosis"]
+df_buni = subset(df_buni, HC == "HC")
+
+df_buni = subset(df_buni, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_buni$diagnosis = factor(df_buni$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_buni, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_buni$Species = "B.uniformis"
+
+```
+
+\newpage
+###Statistics  
+
+```{r statistic_buni_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(b_uni), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(b_uni))
+list = append(list, list2)
+buni_sub = list.remove(b_uni, list)
+dist_buni_sub = dist.dna(buni_sub, model = "K80")
+
+temp_meta = cbind(names(buni_sub), stat_meta[match(names(buni_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_buni_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_buni = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_buni = as.data.frame(t(univar_res_buni))
+names(univar_res_buni) = c("P-Value", "R2")
+univar_res_buni$`P-Value` = as.numeric(univar_res_buni$`P-Value`)
+univar_res_buni$R2 = as.numeric(univar_res_buni$R2)
+univar_res_buni$p_adj = p.adjust(univar_res_buni$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_buni$clinical = list_rownames
+
+univar_res_buni$stars = cut(univar_res_buni$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Bacteroides vulgatus
+###Distance using Kimura's 2-parameters distance  
+
+```{r pcoa_bvulgatus_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_bvul, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 4, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Bacteroides vulgatus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_bvulgatus_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 4, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Bacteroides vulgatus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+\newpage
+##Bifidobacterium adolescentis
+
+```{r best_tree_bado_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 10}
+
+bado_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Bifidobacterium_adolescentis.tree")
+bado_tree$tip.label = gsub("_bowtie2", "", bado_tree$tip.label)
+
+bado_gg = ggtree(bado_tree)
+bado_gg = bado_gg %<+% meta
+bado_gg$data$diagnosis = ifelse(is.na(bado_gg$data$diagnosis), "Reference", bado_gg$data$diagnosis)
+
+bado_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_bado_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 10}
+bado_gg$data$inflammation = ifelse(is.na(bado_gg$data$inflammation), "Reference", bado_gg$data$inflammation)
+
+bado_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance  
+
+```{r pcoa_bado_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_bado, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Bifidobacterium adolescentis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_bado_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Bifidobacterium adolescentis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_bado, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_bado = melt(mat_dis_bado)
+df_bado = df_bado[df_bado$Var1 != df_bado$Var2, ]
+df_bado$HC = stat_meta[match(df_bado$Var1, row.names(stat_meta)), "diagnosis"]
+df_bado$diagnosis = stat_meta[match(df_bado$Var2, row.names(stat_meta)), "diagnosis"]
+df_bado = subset(df_bado, HC == "HC")
+
+df_bado = subset(df_bado, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_bado$diagnosis = factor(df_bado$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_bado, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_bado$Species = "B.adolescentis"
+
+```
+
+
+\newpage
+###Statistics  
+
+```{r statistic_bado_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(b_ado), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(b_ado))
+list = append(list, list2)
+bado_sub = list.remove(b_ado, list)
+dist_bado_sub = dist.dna(bado_sub, model = "K80")
+
+temp_meta = cbind(names(bado_sub), stat_meta[match(names(bado_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_bado_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_bado = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_bado = as.data.frame(t(univar_res_bado))
+names(univar_res_bado) = c("P-Value", "R2")
+univar_res_bado$`P-Value` = as.numeric(univar_res_bado$`P-Value`)
+univar_res_bado$R2 = as.numeric(univar_res_bado$R2)
+univar_res_bado$p_adj = p.adjust(univar_res_bado$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_bado$clinical = list_rownames
+
+univar_res_bado$stars = cut(univar_res_bado$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Bifidobacterium longum 
+
+```{r best_tree_blong_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 10}
+
+blong_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Bifidobacterium_longum.tree")
+blong_tree$tip.label = gsub("_bowtie2", "", blong_tree$tip.label)
+
+blong_gg = ggtree(blong_tree)
+blong_gg = blong_gg %<+% meta
+blong_gg$data$diagnosis = ifelse(is.na(blong_gg$data$diagnosis), "Reference", blong_gg$data$diagnosis)
+
+blong_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_blong_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 10}
+blong_gg$data$inflammation = ifelse(is.na(blong_gg$data$inflammation), "Reference", blong_gg$data$inflammation)
+
+blong_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance  
+
+```{r pcoa_blongum_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_blong, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Bifidobacterium longum",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_blongum_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Bifidobacterium longum",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_blong, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_blong = melt(mat_dis_blong)
+df_blong = df_blong[df_blong$Var1 != df_blong$Var2, ]
+df_blong$HC = stat_meta[match(df_blong$Var1, row.names(stat_meta)), "diagnosis"]
+df_blong$diagnosis = stat_meta[match(df_blong$Var2, row.names(stat_meta)), "diagnosis"]
+df_blong = subset(df_blong, HC == "HC")
+
+df_blong = subset(df_blong, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_blong$diagnosis = factor(df_blong$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_blong, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_blong$Species = "B.longum"
+
+```
+
+\newpage
+###Statistics  
+
+```{r statistic_blong_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(b_long), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(b_long))
+list = append(list, list2)
+blong_sub = list.remove(b_long, list)
+dist_blong_sub = dist.dna(blong_sub, model = "K80")
+
+temp_meta = cbind(names(blong_sub), stat_meta[match(names(blong_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_blong_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_blong = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_blong = as.data.frame(t(univar_res_blong))
+names(univar_res_blong) = c("P-Value", "R2")
+univar_res_blong$`P-Value` = as.numeric(univar_res_blong$`P-Value`)
+univar_res_blong$R2 = as.numeric(univar_res_blong$R2)
+univar_res_blong$p_adj = p.adjust(univar_res_blong$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_blong$clinical = list_rownames
+
+univar_res_blong$stars = cut(univar_res_blong$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Coprococcus sp.  
+
+```{r best_tree_csp_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+
+csp_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Coprococcus_sp_ART55_1.tree")
+csp_tree$tip.label = gsub("_bowtie2", "", csp_tree$tip.label)
+
+csp_gg = ggtree(csp_tree)
+csp_gg = csp_gg %<+% meta
+csp_gg$data$diagnosis = ifelse(is.na(csp_gg$data$diagnosis), "Reference", csp_gg$data$diagnosis)
+
+csp_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_csp_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 8}
+csp_gg$data$inflammation = ifelse(is.na(csp_gg$data$inflammation), "Reference", csp_gg$data$inflammation)
+
+csp_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) +scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance  
+
+```{r pcoa_csp_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_csp, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Coprococcus sp.",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_csp, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_csp = melt(mat_dis_csp)
+df_csp = df_csp[df_csp$Var1 != df_csp$Var2, ]
+df_csp$HC = stat_meta[match(df_csp$Var1, row.names(stat_meta)), "diagnosis"]
+df_csp$diagnosis = stat_meta[match(df_csp$Var2, row.names(stat_meta)), "diagnosis"]
+df_csp = subset(df_csp, HC == "HC")
+
+df_csp = subset(df_csp, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_csp$diagnosis = factor(df_csp$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_csp, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_csp$Species = "Coprococcus sp."
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_csp_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(c_sp), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(c_sp))
+list = append(list, list2)
+csp_sub = list.remove(c_sp, list)
+dist_csp_sub = dist.dna(csp_sub, model = "K80")
+
+temp_meta = cbind(names(csp_sub), stat_meta[match(names(csp_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_csp_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_csp = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_csp = as.data.frame(t(univar_res_csp))
+names(univar_res_csp) = c("P-Value", "R2")
+univar_res_csp$`P-Value` = as.numeric(univar_res_csp$`P-Value`)
+univar_res_csp$R2 = as.numeric(univar_res_csp$R2)
+univar_res_csp$p_adj = p.adjust(univar_res_csp$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_csp$clinical = list_rownames
+
+univar_res_csp$stars = cut(univar_res_csp$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+##Dialister invisus
+
+```{r pcoa_dinvisus_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_dinvisus, eig = T, k=2)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names", all.x = T)
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Dialister invisus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+```{r pcoa_dinvisus_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Dialister invisus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+\newpage
+##Streptococcus vestibularis 
+
+```{r pcoa_svest_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_svest, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Streptococcus vestibularis ",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+```{r pcoa_svest_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Streptococcus vestibularis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+
+
+\newpage
+##Streptococcus parasanguinis  
+
+```{r best_tree_spara_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+
+spara_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Streptococcus_parasanguinis.tree")
+spara_tree$tip.label = gsub("_bowtie2", "", spara_tree$tip.label)
+list_spara = setdiff(spara_tree$tip.label, row.names(stat_meta))
+spara_tree = drop.tip(spara_tree, list_spara, trim.internal = T, subtree = F)
+
+spara_gg = ggtree(spara_tree)
+spara_gg = spara_gg %<+% meta
+spara_gg$data$diagnosis = ifelse(is.na(spara_gg$data$diagnosis), "Reference", spara_gg$data$diagnosis)
+
+spara_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_spara_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+spara_gg$data$inflammation = ifelse(is.na(spara_gg$data$inflammation), "Reference", spara_gg$data$inflammation)
+
+spara_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) + scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+\newpage
+###Distance using Kimura's 2-parameters distance  
+
+```{r pcoa_spara_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_spara, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Streptococcus parasanguinis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+```{r pcoa_spara_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Streptococcus parasanguinis",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_spara, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_spara = melt(mat_dis_spara)
+df_spara = df_spara[df_spara$Var1 != df_spara$Var2, ]
+df_spara$HC = stat_meta[match(df_spara$Var1, row.names(stat_meta)), "diagnosis"]
+df_spara$diagnosis = stat_meta[match(df_spara$Var2, row.names(stat_meta)), "diagnosis"]
+df_spara = subset(df_spara, HC == "HC")
+
+df_spara = subset(df_spara, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_spara$diagnosis = factor(df_spara$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_spara, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_spara$Species = "S.parasanguinis"
+
+```
+
+\newpage
+###Statistics  
+
+```{r statistic_spara_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(s_para), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(e_coli))
+list = append(list, list2)
+spara_sub = list.remove(s_para, list)
+dist_spara_sub = dist.dna(spara_sub, model = "K80")
+
+temp_meta = cbind(names(spara_sub), stat_meta[match(names(spara_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_spara_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_spara = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_spara = as.data.frame(t(univar_res_spara))
+names(univar_res_spara) = c("P-Value", "R2")
+univar_res_spara$`P-Value` = as.numeric(univar_res_spara$`P-Value`)
+univar_res_spara$R2 = as.numeric(univar_res_spara$R2)
+univar_res_spara$p_adj = p.adjust(univar_res_spara$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_spara$clinical = list_rownames
+
+univar_res_spara$stars = cut(univar_res_spara$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+
+\newpage
+##Ruminococcus torques
+
+```{r pcoa_rtorq_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_rtorq, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Ruminococcus torques",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+```{r pcoa_rtorq_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Ruminococcus torques",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_rtorq, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_rtorq = melt(mat_dis_rtorq)
+df_rtorq = df_rtorq[df_rtorq$Var1 != df_rtorq$Var2, ]
+df_rtorq$HC = stat_meta[match(df_rtorq$Var1, row.names(stat_meta)), "diagnosis"]
+df_rtorq$diagnosis = stat_meta[match(df_rtorq$Var2, row.names(stat_meta)), "diagnosis"]
+df_rtorq = subset(df_rtorq, HC == "HC")
+
+df_rtorq = subset(df_rtorq, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_rtorq$diagnosis = factor(df_rtorq$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_rtorq, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_rtorq$Species = "R.torques"
+
+```
+
+
+\newpage
+##Ruminococcus gnavus  
+
+```{r best_tree_rgnav_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+
+rgnav_tree = read.tree("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_3/Data/RAxML_bestTree.s__Ruminococcus_gnavus.tree")
+rgnav_tree$tip.label = gsub("_bowtie2", "", rgnav_tree$tip.label)
+
+
+rgnav_gg = ggtree(rgnav_tree)
+rgnav_gg = rgnav_gg %<+% meta
+rgnav_gg$data$diagnosis = ifelse(is.na(rgnav_gg$data$diagnosis), "Reference", rgnav_gg$data$diagnosis)
+
+rgnav_gg +  
+  geom_tippoint( size = 3, aes( color = diagnosis ) ) +scale_color_manual(values = col_diagnosis) +
+  aes( branch.length = 'length' ) + labs(color = "Patient Diagnosis") +
+  theme_tree2() + theme(legend.position="right")
+```
+
+```{r best_tree_rgnav_inflammation, echo = FALSE, warning = FALSE, message = FALSE}
+rgnav_gg$data$inflammation = ifelse(is.na(rgnav_gg$data$inflammation), "Reference", rgnav_gg$data$inflammation)
+
+rgnav_gg +  
+  geom_tippoint( size = 3, aes( color = inflammation ) ) + scale_color_manual(values = col_inflammation) +
+  aes( branch.length = 'length' ) +
+  theme_tree2() + theme(legend.position="right")
+```
+
+
+\newpage
+###Distance using Kimura's 2-parameters distance  
+
+```{r pcoa_rgnav_diagnosis, echo = FALSE, warning = FALSE, message = FALSE}
+pc = cmdscale(dist_rgnav, eig = T, k=10)
+cap = data.frame(pc$points)
+cap = merge(cap, stat_meta, by = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+Eigenvalues = eigenvals(pc) 
+Variance = Eigenvalues / sum(Eigenvalues) 
+Variance1 = 100 * signif(Variance[1], 2)
+Variance2 = 100 * signif(Variance[2], 2)
+
+cap$inflammation = ifelse(is.na(cap$inflammation), "Reference", cap$inflammation)
+cap$diagnosis = ifelse(is.na(cap$diagnosis), "Reference", cap$diagnosis)
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = diagnosis), size = 3, alpha = 0.7) + theme_bw(base_size = 12)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient Diagnosis") +
+  labs(title="Strain phylogenetic distance Ruminococcus gnavus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+```{r pcoa_rgnav_inflam, echo = FALSE, warning = FALSE, message = FALSE}
+
+ggplot(cap, aes(X1, X2)) + geom_point(aes(color = inflammation), size = 3, alpha = 0.7) + theme_bw(base_size = 10)  + scale_color_manual(values = col_inflammation) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Inflammation Status (crp-value)") +
+  labs(title="Strain phylogenetic distance Ruminococcus gnavus",
+       x = paste("Axis 1 (", Variance1, "%)", sep = ''),
+       y = paste("Axis 1 (", Variance2, "%)", sep = ''))
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_rgnav, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_rgnav = melt(mat_dis_rgnav)
+df_rgnav = df_rgnav[df_rgnav$Var1 != df_rgnav$Var2, ]
+df_rgnav$HC = stat_meta[match(df_rgnav$Var1, row.names(stat_meta)), "diagnosis"]
+df_rgnav$diagnosis = stat_meta[match(df_rgnav$Var2, row.names(stat_meta)), "diagnosis"]
+df_rgnav = subset(df_rgnav, HC == "HC")
+
+df_rgnav = subset(df_rgnav, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_rgnav$diagnosis = factor(df_rgnav$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_rgnav, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_rgnav$Species = "R.gnavus"
+
+```
+
+
+
+\newpage
+###Statistics  
+
+```{r statistic_rgnav_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(r_gnav), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(r_gnav))
+list = append(list, list2)
+rgnav_sub = list.remove(r_gnav, list)
+dist_rgnav_sub = dist.dna(rgnav_sub, model = "K80")
+
+temp_meta = cbind(names(rgnav_sub), stat_meta[match(names(rgnav_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_rgnav_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_rgnav = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_rgnav = as.data.frame(t(univar_res_rgnav))
+names(univar_res_rgnav) = c("P-Value", "R2")
+univar_res_rgnav$`P-Value` = as.numeric(univar_res_rgnav$`P-Value`)
+univar_res_rgnav$R2 = as.numeric(univar_res_rgnav$R2)
+univar_res_rgnav$p_adj = p.adjust(univar_res_rgnav$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_rgnav$clinical = list_rownames
+
+univar_res_rgnav$stars = cut(univar_res_rgnav$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+###Statistics  
+
+```{r statistic_fprau_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(f_prau), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(f_prau))
+list = append(list, list2)
+fprau_sub = list.remove(f_prau, list)
+dist_fprau_sub = dist.dna(fprau_sub, model = "K80")
+
+temp_meta = cbind(names(fprau_sub), stat_meta[match(names(fprau_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_fprau_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_fprau = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_fprau = as.data.frame(t(univar_res_fprau))
+names(univar_res_fprau) = c("P-Value", "R2")
+univar_res_fprau$`P-Value` = as.numeric(univar_res_fprau$`P-Value`)
+univar_res_fprau$R2 = as.numeric(univar_res_fprau$R2)
+univar_res_fprau$p_adj = p.adjust(univar_res_fprau$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_fprau$clinical = list_rownames
+
+univar_res_fprau$stars = cut(univar_res_fprau$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_fprau, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_fprau = melt(mat_dis_fprau)
+df_fprau = df_fprau[df_fprau$Var1 != df_fprau$Var2, ]
+df_fprau$HC = stat_meta[match(df_fprau$Var1, row.names(stat_meta)), "diagnosis"]
+df_fprau$diagnosis = stat_meta[match(df_fprau$Var2, row.names(stat_meta)), "diagnosis"]
+df_fprau = subset(df_fprau, HC == "HC")
+
+df_fprau = subset(df_fprau, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_fprau$diagnosis = factor(df_fprau$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_fprau, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_fprau$Species = "F.prausnitzii"
+
+```
+
+\newpage
+###Statistics  
+
+```{r statistic_ccome_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(c_come), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(c_come))
+list = append(list, list2)
+ccome_sub = list.remove(c_come, list)
+dist_ccome_sub = dist.dna(ccome_sub, model = "K80")
+
+temp_meta = cbind(names(ccome_sub), stat_meta[match(names(ccome_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_ccome_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_ccome = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_ccome = as.data.frame(t(univar_res_ccome))
+names(univar_res_ccome) = c("P-Value", "R2")
+univar_res_ccome$`P-Value` = as.numeric(univar_res_ccome$`P-Value`)
+univar_res_ccome$R2 = as.numeric(univar_res_ccome$R2)
+univar_res_ccome$p_adj = p.adjust(univar_res_ccome$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_ccome$clinical = list_rownames
+
+univar_res_ccome$stars = cut(univar_res_ccome$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_ccome, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_ccome = melt(mat_dis_ccome)
+df_ccome = df_ccome[df_ccome$Var1 != df_ccome$Var2, ]
+df_ccome$HC = stat_meta[match(df_ccome$Var1, row.names(stat_meta)), "diagnosis"]
+df_ccome$diagnosis = stat_meta[match(df_ccome$Var2, row.names(stat_meta)), "diagnosis"]
+df_ccome = subset(df_ccome, HC == "HC")
+
+df_ccome = subset(df_ccome, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_ccome$diagnosis = factor(df_ccome$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_ccome, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_ccome$Species = "C.comes"
+
+```
+
+\newpage
+###Statistics  
+
+```{r statistic_msmith_strain_reference, include = FALSE}
+#Subset the tree for futher statistics
+library(rlist)
+list = setdiff(names(m_smith), row.names(stat_meta))
+list2 = setdiff(row.names(stat_meta), names(m_smith))
+list = append(list, list2)
+msmith_sub = list.remove(m_smith, list)
+dist_msmith_sub = dist.dna(msmith_sub, model = "K80")
+
+temp_meta = cbind(names(msmith_sub), stat_meta[match(names(msmith_sub), row.names(stat_meta)), ])
+temp_meta = temp_meta[,c(12:15, 17)]
+
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(temp_meta)){
+  adonis.univ = adonis(as.formula(paste("dist_msmith_sub ~", col)), data = temp_meta)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+}
+
+
+univar_res_msmith = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_msmith = as.data.frame(t(univar_res_msmith))
+names(univar_res_msmith) = c("P-Value", "R2")
+univar_res_msmith$`P-Value` = as.numeric(univar_res_msmith$`P-Value`)
+univar_res_msmith$R2 = as.numeric(univar_res_msmith$R2)
+univar_res_msmith$p_adj = p.adjust(univar_res_msmith$`P-Value`, "fdr")
+list_rownames = c("Current Arthritis Modifying Drug","Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status")
+univar_res_msmith$clinical = list_rownames
+
+univar_res_msmith$stars = cut(univar_res_msmith$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+
+```
+
+\newpage
+
+### Boxplot phylogenetic distances between health and disease
+
+```{r distance_msmith, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+df_msmith = melt(mat_dis_msmith)
+df_msmith = df_msmith[df_msmith$Var1 != df_msmith$Var2, ]
+df_msmith$HC = stat_meta[match(df_msmith$Var1, row.names(stat_meta)), "diagnosis"]
+df_msmith$diagnosis = stat_meta[match(df_msmith$Var2, row.names(stat_meta)), "diagnosis"]
+df_msmith = subset(df_msmith, HC == "HC")
+
+df_msmith = subset(df_msmith, diagnosis == "HC" | diagnosis == "AS" | diagnosis == "RA")
+df_msmith$diagnosis = factor(df_msmith$diagnosis, levels = c("HC", "RA", "AS"))
+
+ggplot(df_msmith, aes(x = diagnosis, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 3, alpha = 0.4) + theme_bw(base_size = 10) + xlab("Diagnosis") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + theme(legend.position = "NONE") 
+
+df_msmith$Species = "M.smithii"
+
+```
+
+
+```{r barplot_strain_PERMANOVA, echo= FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.height= 8, fig.width=10}
+univar_res_aput$species = "A.putredinis" #B
+univar_res_bado$species = "B.adolescentis" #A
+univar_res_bdorei$species = "B.dorei" #B
+univar_res_blong$species = "B.longum" #A
+univar_res_bovatus$species = "B.ovatus"#B
+univar_res_buni$species = "B.uniformis"#B
+univar_res_erect$species = "E.rectale" #F
+univar_res_fprau$species = "F.prausnitzii" #F
+univar_res_rbromii$species = "R.Bromii" #F
+univar_res_bster$species = "B.stercoris" #B
+univar_res_ccome$species = "C.comes" #F
+univar_res_csp$species = "Coprococcus.sp" # F
+univar_res_dlong$species = "D.longicatena" #F
+univar_res_ecoli$species = "E.coli" # Proteobacteria
+univar_res_msmith$species = "M.smithii" #Euryarchaeota
+univar_res_rgnav$species = "R.gnavus" # F
+univar_res_rintest$species = "R.intestinalis" #F
+univar_res_spara$species = "S.parasanguinis" #F
+univar_res_ssal$species = "S.salivarius" #F
+univar_res_swad$species = "S.wadsworthensis" #P
+
+strain_uivar = rbind(univar_res_aput, univar_res_bado, univar_res_bdorei, univar_res_blong, univar_res_bovatus, univar_res_buni, univar_res_erect, univar_res_fprau, univar_res_rbromii, univar_res_bster, univar_res_ccome, univar_res_csp, univar_res_dlong, univar_res_ecoli, univar_res_msmith, univar_res_rgnav, univar_res_rintest, univar_res_spara, univar_res_ssal, univar_res_swad)
+
+col_clade_b = c("A.putredinis" = "#DB7093", "B.dorei"  = "#CD5C5C", "B.ovatus" = "#B22222", "B.uniformis" = "#DC143C", "B.stercoris" = "#800000")
+col_clade_f = c("E.rectale" = "#87CEEB", "F.prausnitzii" = "#1E90FF", "C.comes" = "#0000CD", "Coprococcus.sp" = "#00008B", "D.longicatena" = "#4682B4", "R.Bromii" = "#5F9EA0", "R.gnavus" = "#008080", "R.intestinalis" = "#20B2AA", "S.parasanguinis" = "#6B8E23", "S.salivarius" = "#556B2F")
+col_clade_o = c("B.adolescentis" = "#DDA0DD", "B.longum" = "#DA70D6", "E.coli" = "#9370DB", "M.smithii" = "#4B0082", "S.wadsworthensis" = "#800080")
+
+col_clade = append(col_clade_b, col_clade_f)
+col_clade = append(col_clade, col_clade_o)
+
+list_clade = unique(strain_uivar$species)
+list_clade = data.frame(list_clade)
+names(list_clade) = "Clade"
+list_clade$phylum = c( "Bacteroidetes", "Actinobacteria", "Bacteroidetes", "Actinobacteria", "Bacteroidetes", "Bacteroidetes", "Firmicutes", "Firmicutes", "Firmicutes", "Bacteroidetes", "Firmicutes", "Firmicutes", "Firmicutes", "Proteobacteria", "Euryarchaeota", "Firmicutes", "Firmicutes", "Firmicutes", "Firmicutes", "Proteobacteria")
+strain_uivar$clinical = gsub("Current Arthritis Modifying Drug", "Drug class", strain_uivar$clinical)
+
+strain_uivar$phylum = list_clade[match(strain_uivar$species, list_clade$Clade), "phylum"]
+strain_uivar$stars2 = cut(strain_uivar$p_adj, c(0, 0.01, 0.05, 0.1, 0.25, Inf), labels = c("***", "**", "*", "'", ""))
+strain_uivar$R2 = strain_uivar$R2 * 100
+dodge = position_dodge(width = 0.8)
+#png("barplot_strain_PERMANOVA_adults.png", height = 12, width = 14, units = "in", res = 600)
+ggplot(strain_uivar, aes(reorder(clinical, R2), y = R2, label = stars2, fill = species)) + geom_bar(stat = "identity", position = dodge) + geom_text(position = dodge, vjust = 0.8, hjust = -0.1, size = 6) + theme_classic(base_size = 18) + ylab("Univarate R-squared") + ylim(0, 28) + xlab("") + labs(fill = "Feature type") + guides(fill = guide_legend(reverse=T)) + scale_fill_manual(values = col_clade) + facet_wrap(~phylum + species, nrow = 4) + coord_flip() + theme(legend.position = "NONE")
+#dev.off()
+```
+
+
+\newpage 
+
+Combined all  
+
+```{r boxplot_all, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 5, fig.width=13, dpi = 300}
+
+df_all = rbind(df_aput, df_bado, df_bdorei, df_blong, df_bovatus, df_bster, df_buni, df_ccome, df_csp, df_dlong, df_ecoli, df_erect, df_fprau, df_msmith, df_rbromii, df_rgnav, df_rintest, df_rtorq, df_spara, df_ssal, df_swad)
+
+list_clade = unique(df_all$Species)
+list_clade = data.frame(list_clade)
+names(list_clade) = "Clade"
+list_clade$phylum = c( "Bacteroidetes", "Actinobacteria", "Bacteroidetes", "Actinobacteria", "Bacteroidetes", "Bacteroidetes", "Bacteroidetes", "Firmicutes", "Firmicutes", "Firmicutes", "Proteobacteria", "Firmicutes", "Firmicutes", "Euryarchaeota", "Firmicutes", "Firmicutes", "Firmicutes", "Firmicutes", "Firmicutes", "Firmicutes", "Proteobacteria")
+
+df_all$phylum = list_clade[match(df_all$Species, list_clade$Clade), "phylum"]
+df_all$phylum = gsub("Euryarchaeota|Proteobacteria", "other", df_all$phylum)
+
+#png("violinplot_Kimuradistance_diagnosis.png", height= 5, width= 13, res = 600, units = "in")
+ggplot(df_all, aes(x = Species, y = value, color = diagnosis, fill = diagnosis, add = "jitter")) + geom_violin(lwd = 1.5, alpha = 0.4) + xlab("Species") + ylab("Kimura distance from HC") + labs(color = "Clade") + scale_color_manual(values = col_diagnosis) + scale_fill_manual(values = col_diagnosis) + facet_grid(~phylum, scales = "free", space = "free") + theme_classic2(base_size = 16) + theme(legend.position = "NONE") + theme(axis.text.x = element_text(angle =25, hjust=1))
+#dev.off()
+```

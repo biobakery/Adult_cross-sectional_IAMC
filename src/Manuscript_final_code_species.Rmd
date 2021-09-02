@@ -1,0 +1,2079 @@
+---
+title: "IAMC- Manuscript1"
+author: "Kelsey N. Thompson, Ph.D."
+date: "March 19, 2019"
+header-includes:
+- \usepackage{titling}
+- \pretitle{\begin{center}\LARGE\includegraphics[width=12cm]{HarvardChan_logo_center_subbrand_RGB_large.png}\\[\bigskipamount]}
+- \posttitle{\end{center}}
+output: 
+  pdf_document:
+    toc: true
+    keep_tex: true
+    dev: png
+---
+
+
+\newpage
+```{r setup_functions, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dpi=600)
+library(ggplot2)
+library(vegan)
+library(ggthemes)
+library(ComplexHeatmap)
+library(circlize)
+library(gridExtra)
+library(grid)
+library(pheatmap)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(gplots)
+library(gtools)
+library(plyr)
+library(dplyr)
+library(mgsub)
+library(readr)
+library(viridis)
+library(pairwiseAdonis)
+library(kableExtra)
+library(randomForest)
+library(caret)
+library(ROCR)
+library(ggridges)
+
+###### functions #######
+keep_species <-function(dat_taxa){
+  temp = dat_taxa[grepl("s__",rownames(dat_taxa)) & (!grepl("t__",rownames(dat_taxa))) & (!grepl("unclassified$",rownames(dat_taxa))),]
+  rownames(temp) = gsub(".*g__.*\\|","",rownames(temp))
+  return(temp)
+}
+
+is_common <- function(otu_df,cutoff=0.1){
+  num_row = dim(otu_df)[1]
+  num_col = dim(otu_df)[2]
+  otu_barcode = otu_df > 0.0001
+  common_index = apply(otu_barcode,1,mean) > cutoff
+  return(common_index)
+}
+
+top_abun <- function(df,num=10){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,mean),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+top_abun_median <- function(df,num=25){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,median),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+
+keep_pathways <-function(dat_path){
+  temp = dat_path[!grepl("\\|",rownames(dat_path)),]
+  # rownames(temp) = gsub(":.*","",rownames(temp))
+  return(temp)
+}
+
+select_pathways <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names.select = pathway.names[index]
+  pathway.names.select = unique(gsub("\\|.*","",pathway.names.select))
+  dat_path = dat_path[pathway.names.select,]
+  # rownames(dat_path) = gsub(":.*","",rownames(dat_path))
+  return(dat_path)
+}
+
+median_matrix <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names = pathway.names[index]
+  dat_path = dat_path[pathway.names,]
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  v_median_all = apply(dat_path,1,median)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  pathway.names.id.unique = unique(pathway.names.id)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  #out = out[,apply(out,2,median)>0]
+  out = out[,names(sort(apply(out,2,sum),decreasing = TRUE)[1:50])]
+  return(out)
+}
+
+same_median_matrix <- function(dat_median,dat_path){
+  taxa.names = rownames(dat_median)
+  pathway.names.id.unique = colnames(dat_median)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  v_median_all = apply(dat_path,1,median)
+  
+  pathway.names = rownames(dat_path)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  return(out)
+}
+
+#Set colors to be consistent across comparisons
+col_drug = c("DMARD conventional synthetic" = "#FFD700", "DMARD biologic" = "#4B0082", "DMARD targeted synthetic" = "#8A2BE2", "Steroid" = "#FF8C00",  "NSAID" = "#F08080", "other" = "#FF4500", "Not recorded" = "#708090", "PPI" = "#87CEFA", "none" = "#90EE90")
+col_diagnosis = c("HC" = "#000080", "RA" = 	"#800080", "AS" = "#DA70D6", "PsA" = "#008000", "NIJP" = "#66CDAA")
+col_inflammation = c("Inflammation" = "#B22222", "Some inflammation" = "#FF8C00", "Not inflamed" = "#4682B4", "Not recorded" = "#808080")
+col_rb = c("Normal" = "#5F9EA0", "Anemia" = "#FF6347", "Not recorded" = "#696969")
+
+
+setwd("/Users/kelseythompson/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional")
+```
+
+\newpage
+```{r setup_tax_meta, include=FALSE}
+map = read.delim("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/mapping_master.tsv", sep = "\t")
+map = map[, -c(1:3)]
+map$batch = as.factor(map$batch)
+
+meta_bhm_ncl = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATABHMNCL_DATA_2021-02-17_1322.csv", stringsAsFactors = FALSE)
+#Pull out each sample once
+bhm_info = subset(meta_bhm_ncl, redcap_repeat_instrument == "")
+bhm_info = bhm_info[,colSums(is.na(bhm_info))<nrow(bhm_info)]
+#Pull out just the metadata with medication
+bhm_med = subset(meta_bhm_ncl, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+bhm_med = bhm_med[,colSums(is.na(bhm_med))<nrow(bhm_med)]
+#Find out which columns are shared between the two datasets
+repeat_measure = intersect(colnames(bhm_info), colnames(bhm_med))
+repeat_measure = repeat_measure[-c(1)]
+bhm_med = bhm_med[, -which(names(bhm_med) %in% repeat_measure)]
+bhm = merge(bhm_info, bhm_med, by = "iamc_id", all = T)
+bhm$Sample = paste(bhm$iamc_id, bhm$redcap_repeat_instance, sep = "v")
+bhm$Sample = gsub("v1", "", bhm$Sample)
+bhm$Sample = gsub("vNA", "", bhm$Sample)
+row.names(bhm) = bhm$Sample
+#Add the cohort within the IAMC to the samples
+bhm$Cohort = gsub("\\d", "", row.names(bhm))
+bhm$batch = map[ match( bhm$Sample, map$sample_id ), "batch"  ]
+#Work on getting the drug category to make sense
+bhm$drug_category[is.na(bhm$drug_category)] = "Not recorded"
+bhm$drug_category = as.factor(bhm$drug_category)
+bhm$drug = recode(bhm$drug_category, "1" = "DMARD conventional synthetic", "2" = "DMARD biologic", "3" = "DMARD targeted synthetic", "4" = "Steroid", "5" = "NSAID", "6" = "other", "7" = "none", "8" = "PPI", "9" = "H2", "Not recorded" = "Not recorded", .default = "Not recorded")
+
+#Work on teh daignosis provided- Karim check these: said they were correct
+bhm$diagnosis_at_time_of_asses[is.na(bhm$diagnosis_at_time_of_asses)] = "Unknown"
+bhm$diagnosis_at_time_of_asses[(bhm$diagnosis_at_time_of_asses== "")] = "Unknown"
+bhm$diagnosis_at_time_of_asses = mgsub(bhm$diagnosis_at_time_of_asses, c("  $", " $", "^ "), c("", "", ""))
+bhm$diagnosis = recode(bhm$diagnosis_at_time_of_asses, "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "Ankylosing Spondylitis", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Drug Induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Fibromyalgia" = "Fibromyalgia", "Gout" = "Gout", "Healthy Control" = "Healthy Control", "Healthy control" = "Healthy Control", "Healthy control.  Blood relative (Daughter) of SWEAC 0213 (BHM00024)" = "Healthy Control", "Healthy control.  Partner of SWEAC 00321 (BHM00205)" = "Healthy Control", "Lupus/Other CTD-Associated" = "Lupus/Other CTD-Associated", "Non-Inflammatory" = "Non-Inflammatory", "Non inflammatory" = "Non-Inflammatory", "PsA" = "PsA", "PSA" = "PsA", "Pseudogout" = "Pseudogout", "Pseudo Gout" = "Pseudogout", "Psoriatic Arthritis" = "PsA", "Ra (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987)" = "RA (1987)", "RA (2010)" = "RA (2010)", "Reactive Arthritis" = "Reactive Arthritis", "Rheumatoid Arthritis" = "RA", "RS3PE" = "RS3PE", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "Undifferentiated Spondylo-Arthropathy", "Unknown" = "Unknown", "Osteoarthritis" = "Osteoarthritis", "Other Inflammatory Arthritis" = "Other Inflammatory Arthritis", "Inflammatory Arthritis related to Hereditary Haemochromatosis" = "Other Inflammatory Arthritis", "Palindromic Rheumatism" = "Other Inflammatory Arthritis", "Other Inflammatory" = "Other Inflammatory Arthritis", "Undifferentiated Inflammatory Arthritis" = "Clinically Suspect Arthralgia", "Enteropathic Arthritis" = "Enteropathic Arthritis", .default = "Unknown")
+
+
+bhm$arthritis_type = recode(bhm$diagnosis, "RA (1987 & 2010)" = "RA", "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "AS", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug Induced Inflammatory Arthritis" = "other", "Fibromyalgia" = "Non-Inflammatory Joint Pain", "Gout" = "Crystal Arthritis", "Healthy Control" = "Healthy Control", "Lupus/Other CTD-Associated" = "other", "Non-Inflammatory" = "Non-Inflammatory Joint Pain", "PsA" = "PsA", "Pseudogout" = "Crystal Arthritis", "RA (1987 & 2010)" = "RA", "RA (1987)" = "RA", "RA (2010)" = "RA", "Reactive Arthritis" = "other", "RA" = "RA", "RS3PE" = "other", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "other", "Unknown" = "Unknown", "Osteoarthritis" = "Non-Inflammatory Joint Pain", "Other Inflammatory Arthritis" = "other", "Enteropathic Arthritis" = "other", .default = "Unknown")
+
+library(lubridate)
+bhm$DOB = parse_date_time(bhm$date_of_birth_month_year, orders = c("ymd", "dmy", "mdy"))
+bhm$DOB = gsub(" UTC", "", bhm$DOB)
+bhm$date = parse_date_time(bhm$assessment_date, orders = c("ymd", "dmy", "mdy"))
+bhm$date = gsub(" UTC", "", bhm$date)
+bhm$age = round(time_length(difftime(as.Date(bhm$date), as.Date(bhm$DOB)), "years"))
+
+#bhm$ccp = paste(bhm$anti_ccp, bhm$arthritis_type, sep = "_")
+#bhm$ccp = gsub("Not recorded/ Not known_Healthy Control", "Negative", bhm$ccp)
+#bhm$ccp = gsub("_.*", "", bhm$ccp)
+
+meta_oas = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATAOAS_DATA_2021-02-17_1321.csv", head = T, sep = ",")
+oas_info = subset(meta_oas, redcap_repeat_instrument == "")
+oas_info = oas_info[,colSums(is.na(oas_info))<nrow(oas_info)]
+oas_med = subset(meta_oas, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+oas_med = oas_med[,colSums(is.na(oas_med))<nrow(oas_med)]
+repeat_measure = intersect(colnames(oas_info), colnames(oas_med))
+repeat_measure = repeat_measure[-c(1)]
+oas_med = oas_med[, -which(names(oas_med) %in% repeat_measure)]
+oas = merge(oas_info, oas_med, by = "iamc_id", all = TRUE)
+oas$Sample = paste(oas$iamc_id, oas$redcap_repeat_instance, sep = "v")
+oas$Sample = gsub("v1", "", oas$Sample)
+oas$Sample = gsub("vNA", "", oas$Sample)
+row.names(oas) = oas$Sample
+oas$Cohort = rep("OAS", nrow(oas))
+oas$diagnosis = oas$patient_id
+oas$diagnosis = gsub("\\d", "", oas$diagnosis)
+oas$diagnosis = gsub("HCB", "HC", oas$diagnosis)
+oas$drug_category = (ifelse(is.na(as.character(oas$drug_category)), "Not recorded", as.character(oas$drug_category)))
+oas$drug = recode(oas$drug_category, "1" = "DMARD conventional synthetic", "2" = "DMARD biologic", "3" = "DMARD targeted synthetic", "4" = "Steroid", "5" = "NSAID", "6" = "other", "7" = "none", "8" = "PPI", "9" = "H2", "Not recorded/Not known" = "Not recorded/Not known", .default = "Not recorded/Not known")
+oas$batch = map[ match( oas$Sample, map$sample_id ), "batch"  ]
+library(lubridate)
+oas$DOB = parse_date_time(oas$date_of_birth_month_year, orders = c("ymd", "dmy", "mdy"))
+oas$DOB = gsub(" UTC", "", oas$DOB)
+oas$DOB = gsub("2065", "1965", oas$DOB)
+oas$date_of_diagnosis_2 = parse_date_time(oas$assessment_date, orders = c("ymd", "dmy", "mdy"))
+oas$date_of_diagnosis_2 = gsub(" UTC", "", oas$date_of_diagnosis_2)
+oas$age = round(time_length(difftime(as.Date(oas$date_of_diagnosis_2), as.Date(oas$DOB)), "years"))
+oas$DOB = NULL
+oas$date_of_diagnosis_2 = NULL
+oas$hla_b27 = as.character(oas$hla_b27)
+oas$hla = recode(oas$hla_b27, "Positive" = "Positive",  "positive" = "Positive", "POSITIVE " = "Positive", "POSITIVE" = "Positive", "Positive ('rare' homozygote)" = "Positive", "Negative" = "Negative", "negative" = "Negative", "NEGATIVE" = "Negative", "negative " = "Negative", "NEGATIVE " = "Negative", "Not done/Not known" = "Not done/Not known", "Not relevant" = "Not done/Not known", "Not relevant " = "Not done/Not known", .default = "Not done/Not known")
+
+
+
+#Metadata exclude
+list_oas = c("Sample", "Cohort", "drug", "esr", "batch", "crp", "disease_duration_at_time_o", "diagnosis", "smoking_current_ever_never", "ethnicity", "bmi", "gender", "iamc_id", "age", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+oas_subset = oas[ , which(colnames(oas) %in% list_oas)]
+names(oas_subset) = c("iamc_id", "gender",  "bmi", "ethnicity","smoking_current_ever_never", "disease_duration", "esr", "crp", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "Sample", "Cohort", "diagnosis", "drug", "batch", "age")
+
+list_bhm = c("Sample", "Cohort", "drug", "esr", "batch", "crp", "disease_duration_at_time", "arthritis_type", "smoking_current_ever_never", "ethnicity", "bmi", "gender", "iamc_id", "age", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+bhm_subset = bhm[ , which(colnames(bhm) %in% list_bhm)]
+names(bhm_subset) = c("iamc_id", "gender",  "bmi", "ethnicity","smoking_current_ever_never", "disease_duration", "esr", "crp", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "Sample", "Cohort", "batch",  "drug", "diagnosis", "age")
+
+meta_dat = rbind(bhm_subset, oas_subset)
+meta_dat$diagnosis = recode(meta_dat$diagnosis, "AS" = "AS", "Clinically Suspect Arthralgia" = "CSA", "Crystal Arthritis" = "Crystal Arthritis", "HC" = "HC", "Healthy Control" = "HC", "Non-Inflammatory Joint Pain" = "NIJP", "NR" = "NR", "other" = "other", "PsA" = "PsA", "RA" = "RA", "Unclassified Inflammatory Arthritis" = "Unclass", "Unknown" = "Unknown", .default = "NA")
+
+#Get the quartiles for crp
+summary(meta_dat$crp)
+#split the data into the quartiles
+quantile(meta_dat$crp, probs = c(0.33, 0.66), na.rm = T)
+meta_dat$inflammation = cut(meta_dat$crp, c(0,4,10,245), labels = c("Not inflamed", "Some inflammation", "Inflammation"))
+meta_dat$inflammation = ifelse(is.na(as.character(meta_dat$inflammation)),"Not recorded", as.character(meta_dat$inflammation))
+meta_dat$inflammation = ifelse(meta_dat$inflammation == "Not recorded" & meta_dat$diagnosis == "HC", "Not inflamed", as.character(meta_dat$inflammation))
+meta_dat$crp_corrected = ifelse(meta_dat$crp > 100, "100", as.character(meta_dat$crp))
+
+#Change the data types in some columns to make them more accurate with variables (i.e. smoking is current in 1 or 0 formats so change that column to character instead of int.)
+str(meta_dat)
+meta_dat$ethnicity = as.character(meta_dat$ethnicity)
+meta_dat$smoking_current_ever_never = as.character(meta_dat$smoking_current_ever_never)
+
+summary(meta_dat$esr)
+#meta_dat$esr_stat = ifelse(is.na(meta_dat$esr) & meta_dat$diagnosis == "HC", "7", as.character(meta_dat$esr))
+#meta_dat$esr_stat = as.numeric(meta_dat$esr_stat)
+meta_dat$disease_duration = ifelse(is.na(meta_dat$disease_duration) & meta_dat$diagnosis == "HC", "0", as.character(meta_dat$disease_duration))
+meta_dat$disease_duration = as.numeric(meta_dat$disease_duration)
+str(meta_dat)
+
+#Deal with the mess that is ethnicity classifications in redcap
+meta_dat$ethnicity = recode(meta_dat$ethnicity, "1" = "Not stated", "2" = "White", "3" = "White", "4" = "White", "5" = "Not White", "6" = "Not White", "7" = "Not White", "8" = "Not White", "9" = "Not White", "10" = "Not White", "11" = "Not White", "12" = "Not White", "13" = "Not White", "14" = "Not White", "15" = "Not White", "16" = "Not White", "17" = "Not White", "18" = "White", "19" = "Not White", "20" = "Not White", "21" = "Not White", "22" = "Not White", .default = "Not stated")
+meta_dat$ethnicity = ifelse(is.na(meta_dat$ethnicity), "Not stated", as.character(meta_dat$ethnicity))
+
+meta_dat$esr = NULL
+meta_dat$bmi = NULL
+
+#hemoglobin : categorical 135 g/L in Men and 120 g/L in women
+#atl : categorical  10-40 units per liter (U/L) of blood for men and 7-35 U/L for women
+
+# taxonomic profiles relative abundance
+dat_taxa = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Input_data/current_merged_1_11_metaphlan_table.tsv",header=TRUE,row.names=1,sep="\t") / 100
+# DNA pathway relative abundance
+dat_dna_path = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Input_data/current_merged_1_11_pathway_relab.tsv",header=TRUE,row.names=1,sep="\t")
+# DNA pathway relative abundance
+dat_dna_ecs = read.csv("~/Desktop/current_merged_1_11_ecs_relab_rename.tsv",sep="\t",row.names = 1, header=T)
+
+
+### unify ID ###
+#At this point this data set does not have the addition of Sample_DNASample
+#colnames(dat_taxa) = gsub("Sample_DNASample","",colnames(dat_taxa))
+colnames(dat_taxa) = gsub("_taxonomic_profile","",colnames(dat_taxa))
+dat_taxa$current_merged = NULL
+colnames(dat_dna_path) = gsub("_Abundance","",colnames(dat_dna_path))
+colnames(dat_dna_ecs) = gsub("_Abundance.RPKs","",colnames(dat_dna_ecs))
+
+
+#Exclude samples with little to no reads
+sample_exclude = c("BHM00026", "BHM00034", "BHM00041", "BHM00109")
+dim(dat_taxa)
+dat_taxa = dat_taxa[,-which(colnames(dat_taxa) %in% sample_exclude)]
+dim(dat_taxa)
+
+tmp.ind = grep( "\\|c__", rownames(dat_taxa), invert = T )
+tmp = dat_taxa[tmp.ind,]
+tmp.ind = grep( "\\|p__", rownames(tmp))
+dat_phylum = tmp[tmp.ind,]
+row.names(dat_phylum) = gsub("k__Bacteria\\|", "", row.names(dat_phylum))
+
+dat_phylum = dat_phylum %>% group_by(row.names(dat_phylum)) %>% summarise_all(list(sum))
+colSums(dat_phylum[, -1])
+dat_phylum = data.frame(dat_phylum)
+row.names(dat_phylum) = dat_phylum$row.names.dat_phylum.
+dat_phylum$row.names.dat_phylum. = NULL
+dat_phylum = data.frame(t(dat_phylum))
+#Check to make sure all samples included have relative abundance
+check = colSums(dat_taxa) > 0
+check = subset(check, check == FALSE)
+check
+
+dat_meta = meta_dat[rownames(meta_dat) %in% colnames(dat_taxa),]
+dat_meta = subset(dat_meta, diagnosis != "Unknown" & diagnosis != "NR" & diagnosis != "Crystal Arthritis" & diagnosis != "Unclass" & diagnosis != "other" & diagnosis != "CSA")
+dat_taxa = dat_taxa[,colnames(dat_taxa) %in% rownames(dat_meta)]
+dat_dna_path = dat_dna_path[,which(colnames(dat_dna_path) %in% colnames(dat_taxa))]
+dat_dna_ecs = dat_dna_ecs[,which(colnames(dat_dna_ecs) %in% colnames(dat_taxa))]
+
+dat_meta = dat_meta[match(row.names(dat_meta), names(dat_taxa)), ]
+
+#Create a smaller file to run stats aganist
+str(dat_meta)
+stat_meta = dat_meta
+stat_meta$crp = NULL
+stat_meta$Sample = NULL
+str(stat_meta)
+row.names(stat_meta) = stat_meta$iamc_id
+stat_meta$iamc_id = NULL
+
+na_meta = is.na(stat_meta)
+inpute = colSums(na_meta)/nrow(stat_meta) * 100
+
+
+
+### select taxa ###
+# keep species (without unclassified)
+dat_taxa_species = keep_species(dat_taxa)
+# select common species (>0.0001 in more than 10% samples)
+dat_taxa_species_common = dat_taxa_species[is_common(dat_taxa_species),]
+# keep top 25 species (according to median)
+dat_taxa_species_top = dat_taxa_species[top_abun(dat_taxa_species,num=10),]
+
+### select DNA pathway ###
+# keep unstratified dna pathways
+dat_dna_path_unstratified = keep_pathways(dat_dna_path)
+dat_dna_ecs_unstratified = keep_pathways(dat_dna_ecs)
+# select top 50 unstratified dna pathways (according to median)
+dat_dna_path_unstratified_top = dat_dna_path_unstratified[top_abun(dat_dna_path_unstratified,num=10),]
+dat_dna_ecs_unstratified_top = dat_dna_ecs_unstratified[top_abun(dat_dna_ecs_unstratified,num=10),]
+# select all the unstratified dna pathways related to the top 25 species
+dat_dna_path_unstratified_select = select_pathways(dat_path=dat_dna_path,dat_taxa=dat_taxa_species_top )
+#dat_dna_ecs_unstratified_select = select_pathways(dat_ecs=dat_dna_ecs,dat_taxa=dat_taxa_species_top )
+# select all the top 50 unstratified dna pathways related to the top 25 species
+dat_dna_path_unstratified_select_top = dat_dna_path_unstratified_select[top_abun(dat_dna_path_unstratified_select,num=10),]
+
+dat_dna_path_common = dat_dna_path_unstratified[is_common(dat_dna_path_unstratified), ]
+dat_dna_ecs_common = dat_dna_ecs_unstratified[is_common(dat_dna_ecs_unstratified), ]
+
+identical(row.names(stat_meta), names(dat_taxa_species_common))
+identical(row.names(stat_meta), names(dat_dna_path_common))
+identical(row.names(stat_meta), names(dat_dna_ecs_common))
+
+#write.csv(list, file = "current_manuscript_cross_samplelist.csv", quote = FALSE)
+```
+
+
+\newpage
+
+# Metadata visualizations
+
+This section will include all of variables that are iterated through in Figure 1E (univariate PERMANOVA figure).
+
+## Diagnosis
+
+Diagnosis per batch of sequencing  
+
+```{r diagnosis_counts_sequencing, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("Legend_diagnosis.png", height = 6, width = 10, units = "in", res = 600)
+ggplot(dat_meta, aes(x= batch, fill = diagnosis)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Sequencing Batch") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") 
+#dev.off()
+```
+
+\newpage 
+
+## Inflammation status  
+
+Inflammation by diagnosis  
+
+```{r inflamm_by_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 5, fig.width = 9, dpi= 600}
+dat_meta$inflammation = ordered(dat_meta$inflammation, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+dat_meta$diagnosis = ordered(dat_meta$diagnosis, c("HC", "NIJP", "AS", "PsA", "RA"))
+#png("Inflammation_by_batch.png", height = 5, width = 9, units = "in", res = 600)
+ggplot(dat_meta, aes(x= diagnosis, fill = inflammation)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 16) + ylab("Proportion of samples") + xlab("Patient diagnosis") + scale_fill_manual(values = col_inflammation) + labs(fill = "Inflammation status") 
+#dev.off()
+```
+
+\newpage 
+
+Inflammation per batch of sequencing  
+
+```{r inflammation_counts_sequencing, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+#png("Lengend_reduce_inflam.png", height = 6, width = 10, units = "in", res = 600)
+ggplot(dat_meta, aes(x= batch, fill = inflammation)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Sequencing Batch") + scale_fill_manual(values = col_inflammation) + labs(fill = "Inflammation status") 
+#dev.off()
+```
+
+\newpage 
+
+CRP (corrected to 100 max) colored by patient diagnosis
+
+```{r inflammation_crp_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("histogram_age_manuscript.png", height = 5, width = 8, units = "in", res = 600)
+dat_meta$crp_corrected =  as.numeric(dat_meta$crp_corrected)
+ggplot(dat_meta, aes(x= crp_corrected, fill = diagnosis)) + geom_histogram(bins = 35) + theme_bw(base_size = 12) + ylab("Number of individuals") + xlab("CRP-value (corrected)") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") + geom_vline(xintercept = 4, size =1) + geom_vline(xintercept = 10, size =1)
+#dev.off()
+```
+
+\newpage 
+
+## Drug
+
+Current arthritis modifying drug by patient diagnosis.  
+
+```{r drug_by_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("Diagnosis_by_batch.png", height = 6, width = 10, units = "in", res = 600)
+dat_meta$drug = gsub("Not recorded/Not known", "Not recorded", dat_meta$drug)
+dat_meta$diagnosis = ordered(dat_meta$diagnosis, c("HC", "NIJP", "AS", "RA", "PsA"))
+ggplot(dat_meta, aes(x= diagnosis, fill = drug)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Patient diagnosis") + scale_fill_manual(values = col_drug) + labs(fill = "Current arthritis modifying drug") 
+#dev.off()
+```
+
+
+\newpage
+
+## HLA-B27 (OAS ONLY)    
+
+```{r hla_b27_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+oas_dat = oas[row.names(oas) %in% row.names(dat_meta), ]
+oas_dat$hla_b27 = as.factor(oas_dat$hla_b27)
+oas_dat$hla_b27 = droplevels(oas_dat$hla_b27)
+oas_dat$hla_b27 = gsub(" $", "", oas_dat$hla_b27)
+oas_dat$hla = recode(oas_dat$hla_b27, "negative" = "Negative", "Negative" = "Negative", "NEGATIVE " = "Negative", "Not done/Not known" = "Not recorded", "Not relevant" = "Not recorded", "postive" = "Positive", "Positive" = "Positive", "POSITIVE" = "Positive", "Positive ('rare' homozygote)" = "Positive", .default = "Not recorded")
+oas_dat$hla = ordered(oas_dat$hla, c("Positive", "Negative", "Not recorded"))
+
+
+#png("hla_oas.png", height = 6, width = 10, units = "in", res = 600)
+ggplot(oas_dat, aes(x= hla, fill = diagnosis)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("HLA-B27 Status") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") 
+#dev.off()
+```
+
+\newpage
+
+## BASDAI (OAS only)
+
+```{r inflammation_basdai, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("histogram_age_manuscript.png", height = 5, width = 8, units = "in", res = 600)
+oas_dat$inflammation = dat_meta[match(row.names(oas_dat), row.names(dat_meta)), "inflammation"]
+ggplot(oas_dat, aes(x = basdai, y = crp)) + geom_point(size = 3, aes(color = inflammation)) + theme_bw(base_size = 12) + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation status") + xlab("BASDAI") + ylab("C-reactive protein") + geom_smooth(method = lm, color = "black")
+#dev.off()
+```
+
+
+\newpage 
+
+## RF-status (BHM/NCL only)    
+
+```{r rf_status_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+bhm_dat = bhm[row.names(bhm) %in% row.names(dat_meta), ]
+bhm_dat$rf = recode(bhm_dat$rf_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$rf[is.na(bhm_dat$rf)] = "Not recorded"
+bhm_dat$arthritis_type = droplevels(as.factor(bhm_dat$arthritis_type))
+bhm_dat$arthritis_type = as.character(bhm_dat$arthritis_type)
+bhm_dat$arthritis_type = mgsub(bhm_dat$arthritis_type, c("Healthy Control", "Non-Inflammatory Joint Pain"), c("HC", "NIJP"))
+bhm_dat$rf = ordered(bhm_dat$rf, c("Positive", "Negative", "Not recorded"))
+
+#png("rf_bhm.png", height = 6, width = 10, units = "in", res = 600)
+ggplot(bhm_dat, aes(x= rf, fill = arthritis_type)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("RF Status") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") 
+#dev.off()
+```
+
+\newpage 
+
+## Anti-CCP (BHM/NCL only)  
+
+```{r anti_ccp_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+bhm_dat$anti_ccp_status = recode(bhm_dat$anti_ccp_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$anti_ccp_status[is.na(bhm_dat$anti_ccp_status)] = "Not recorded"
+bhm_dat$anti_ccp_status = ordered(bhm_dat$anti_ccp_status, c("Positive", "Negative", "Not recorded"))
+
+#png("rf_bhm.png", height = 6, width = 10, units = "in", res = 600)
+ggplot(bhm_dat, aes(x= anti_ccp_status, fill = arthritis_type)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Anti-CCP Status") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") 
+#dev.off()
+```
+
+\newpage 
+
+## DAS28-crp/esr (BHM/NCL only)  
+
+```{r inflammation_das_crp, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("histogram_age_manuscript.png", height = 5, width = 8, units = "in", res = 600)
+
+bhm_dat$inflammation = dat_meta[match(row.names(bhm_dat), row.names(dat_meta)), "inflammation"]
+ggplot(bhm_dat, aes(x = das28_crp, y = crp)) + geom_point(size = 3, aes(color = inflammation)) + theme_bw(base_size = 12) + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation status") + xlab("DAS28 (crp)") + ylab("C-reactive protein") + geom_smooth(method = lm, color = "black")
+#dev.off()
+```
+
+```{r inflammation_das_esr, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("histogram_age_manuscript.png", height = 5, width = 8, units = "in", res = 600)
+
+ggplot(bhm_dat, aes(x = das28_esr, y = crp)) + geom_point(size = 3, aes(color = inflammation)) + theme_bw(base_size = 12) + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation status") + xlab("DAS28 (esr)") + ylab("C-reactive protein") + geom_smooth(method = lm, color = "black")
+#dev.off()
+```
+
+\newpage
+
+## Age  
+
+Age colored by diagnosis   
+
+```{r histogram_age, echo = FALSE, warning = FALSE, message = FALSE, fig.height = 5, fig.width = 9, dpi = 600}
+#png("histogram_age_manuscript.png", height = 5, width = 9, units = "in", res = 600)
+ggplot(dat_meta, aes(x= age, fill = diagnosis)) + geom_histogram() + theme_bw(base_size = 16) + ylab("Number of individuals") + xlab("Age (years)") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") 
+#dev.off()
+```
+\newpage 
+
+Age colored by inflammation    
+
+
+```{r histogram_age_inflam, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("histogram_age_manuscript.png", height = 5, width = 9, units = "in", res = 600)
+ggplot(dat_meta, aes(x= age, fill = inflammation)) + geom_histogram() + theme_bw(base_size = 12) + ylab("Number of individuals") + xlab("Age (years)") + scale_fill_manual(values = col_inflammation) + labs(fill = "Inflammation status") 
+#dev.off()
+```
+
+\newpage 
+
+## Hemoglobin
+
+```{r histogram_hemoglobin, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("histogram_hemoglobin_manuscript.png", height = 5, width = 12, units = "in", res = 600)
+ggplot(dat_meta, aes(x= haemoglobin, fill = diagnosis)) + geom_histogram(bins = 15) + theme_bw(base_size = 12) + ylab("Number of individuals") + xlab("Hemoglobin (d/L)") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") + facet_grid(~gender)
+#dev.off()
+```
+\newpage
+
+## Sex  
+
+Sex by diagnosis    
+
+```{r sex_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+col_sex = c("m" = "#6495ED", "f" = "#DB7093")
+ggplot(dat_meta, aes(x= diagnosis, fill = gender)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Patient diagnosis") + scale_fill_manual(values = col_sex) + labs(fill = "Patient sex") 
+```
+
+\newpage
+
+## Smoking status  
+
+Smoking status by diagnosis    
+
+```{r smoking_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+dat_meta$smoking = recode(dat_meta$smoking_current_ever_never, "1" = "Current", "2" = "Ever", "3" = "Never", "-1" = "Not recorded", .default = "Not recorded")
+dat_meta$smoking = as.character(dat_meta$smoking)
+dat_meta$smoking[is.na(dat_meta$smoking)] = "Not recorded"
+col_smoke = c("Current" = "#DC143C", "Ever" = "#FF7F50", "Never" = "#66CDAA", "Not recorded" = "#696969")
+
+ggplot(dat_meta, aes(x= diagnosis, fill = smoking)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Patient diagnosis") + scale_fill_manual(values = col_smoke) + labs(fill = "Smoking status") 
+```
+
+
+\newpage
+
+Smoking status by inflammation    
+
+```{r smoking_inflammation, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(dat_meta, aes(x= inflammation, fill = smoking)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Inflammation status") + scale_fill_manual(values = col_smoke) + labs(fill = "Smoking status") 
+```
+
+\newpage 
+
+## Collection site  
+
+Collection site by diagnosis   
+
+```{r cohort_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(dat_meta, aes(x= Cohort, fill = diagnosis)) + geom_bar(position = position_fill(reverse = TRUE)) + theme_classic(base_size = 12) + ylab("Proportion of samples") + xlab("Collection site") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") 
+```
+
+
+\newpage 
+
+## Disease duration
+
+Disease duration by diagnosis  
+
+```{r disease_duration_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("histogram_age_manuscript.png", height = 5, width = 8, units = "in", res = 600)
+
+ggplot(dat_meta, aes(x= disease_duration, fill = diagnosis)) + geom_histogram(bins = 50) + theme_bw(base_size = 12) + ylab("Number of individuals") + xlab("Disease duration (days)") + scale_fill_manual(values = col_diagnosis) + labs(fill = "Patient diagnosis") 
+#dev.off()
+```
+
+
+\newpage
+# Taxonomy: Full Dataset 
+Data from MetaPhlAn2 species results:
+\newline
+file = species_metaphlan2.tsv
+\newline
+Samples exclude from analysis because of low read count  = BHM00026, BHM00034, BHM00041, BHM00109
+The covariates included here a limited because they had to both be present in OAS and BHM/NCL cohorts and not have more then 10% missingness. Disease specific endpoints are presented later in the PDF.   
+\newline  
+
+# Beta Diversity  
+
+Species abundances are passed through a basic filter requiring each species to have at least 0.01 % abundance in at least 10 % of all samples.
+A total of `r nrow(dat_taxa_species)` species were identified. After basic filtering `r ncol(dat_taxa_species_common)` species remained.  
+
+```{r beta_tax, include= FALSE}
+dat_taxa_species_common = data.frame(t(dat_taxa_species_common))
+bray = vegdist(dat_taxa_species_common, "bray")
+bray
+
+stat_meta = stat_meta[complete.cases(stat_meta$age), ]
+dat_taxa_species_common = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(stat_meta), ]
+bray = vegdist(dat_taxa_species_common, "bray")
+
+stat_meta$smoking = recode(stat_meta$smoking_current_ever_never, "1" = "Current", "2" = "Ever", "3" = "Never", "-1" = "Not recorded", .default = "Not recorded")
+stat_meta$smoking = as.character(stat_meta$smoking)
+stat_meta$smoking[is.na(stat_meta$smoking)] = "Not recorded"
+stat_meta$smoking_current_ever_never = NULL
+
+colSums(is.na(stat_meta))
+
+stat_meta$drug = gsub("Not recorded/Not known", "Not recorded", stat_meta$drug)
+
+meta_disease_duration = stat_meta[complete.cases(stat_meta$disease_duration), ]
+species_disease_duration = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(meta_disease_duration), ]
+#meta_disease_duration = meta_disease_duration[row.names(species_disease_duration), match(row.names(meta_disease_duration)), ]
+identical(row.names(species_disease_duration), row.names(meta_disease_duration))
+bray_disease_duration = vegdist(species_disease_duration, "bray")
+
+meta_crp = stat_meta[complete.cases(stat_meta$crp_corrected), ]
+meta_crp$crp_corrected = as.numeric(meta_crp$crp_corrected)
+species_crp = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(meta_crp), ]
+bray_crp = vegdist(species_crp, "bray")
+
+meta_alt = stat_meta[complete.cases(stat_meta$alt), ]
+list_alt = c("haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "batch")
+meta_alt = meta_alt[, which(names(meta_alt) %in% list_alt)]
+species_alt = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(meta_alt), ]
+bray_alt = vegdist(species_alt, "bray")
+
+
+na = c("disease_duration", "crp_corrected", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+meta_wo_na = stat_meta[, -which(names(stat_meta) %in% na)]
+str(meta_wo_na)
+
+write.table(data.frame(t(dat_taxa_species_common)), file = "species_adult_halla_test.txt", quote = F, sep = "\t")
+write.table(data.frame(t(stat_meta)), file = "metadata_adult_halla_test.txt", quote = F, sep = "\t")
+
+```
+
+\newpage
+
+## Univariate statistics   
+
+```{r adonis_univariate_tax, echo = FALSE, warning = FALSE, message = FALSE}
+library(tidyr)
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(meta_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray ~ batch +", col)), data = meta_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+disease_duration = adonis(bray_disease_duration ~ batch + disease_duration, data = meta_disease_duration)
+adonis_res_pval$disease_duration = disease_duration$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$disease_duration = disease_duration$aov.tab[2,]$R2
+
+crp_corrected = adonis(bray_crp ~ batch + crp_corrected, data = meta_crp)
+adonis_res_pval$crp_corrected = crp_corrected$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$crp_corrected = crp_corrected$aov.tab[2,]$R2
+
+for (col in names(meta_alt)){
+  adonis.univ = adonis(as.formula(paste("bray_alt ~ batch +", col)), data = meta_alt)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+
+collect_correct = adonis(bray ~ batch + diagnosis + Cohort, data = meta_wo_na)
+adonis_res_pval$collect_correct = collect_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$collect_correct = collect_correct$aov.tab[3,]$R2
+
+gender_correct = adonis(bray ~ batch + diagnosis + gender, data = meta_wo_na)
+adonis_res_pval$gender_correct = gender_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$gender_correct = gender_correct$aov.tab[3,]$R2
+
+batch = adonis(bray ~ batch, data = meta_wo_na)
+adonis_res_pval$batch_real = batch$aov.tab[1,]$`Pr(>F)`
+adonis_res_rsq$batch_real = batch$aov.tab[1,]$R2
+
+
+univar_res_tax = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_tax = as.data.frame(t(univar_res_tax))
+names(univar_res_tax) = c("P-Value", "R2")
+univar_res_tax$`P-Value` = as.numeric(univar_res_tax$`P-Value`)
+univar_res_tax$R2 = as.numeric(univar_res_tax$R2)
+univar_res_tax$p_adj = p.adjust(univar_res_tax$`P-Value`, "fdr")
+univar_res_tax = subset(univar_res_tax, row.names(univar_res_tax) != "batch" & row.names(univar_res_tax) != "Cohort" & row.names(univar_res_tax) != "gender")
+list_rownames = c("Ethnicity", "Current Arthritis Modifying Drug", "Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status", "Disease Duration", "CRP-value", "Haemoglobin", "Albumin", "Alanine Aminotransferase", "Alkaline Phosphatase", "Bilirubin", "Collection Site*", "Sex*", "Sequencing Batch")
+univar_res_tax$clinical = list_rownames
+
+univar_res_tax$stars = cut(univar_res_tax$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+Univarate statistics of each covariate adjusted by batch (ie model = bray distance ~ batch + covariate). All NA's have been removed per covariate, with limited inputation. Only the disease duration in this case has been imputed with HC's anchoring the statistics with a disease duration of 0 days. For crp-corrected values no imputation was completed, it was corrected by bringing all values above 100 and setting them to 100 to attempt to normalize the data.   
+
+```{r barplot_univ_statistics_tax_all, echo= FALSE, warning = FALSE, message = FALSE, dpi = 300}
+univar_res_tax$p_adj = round(univar_res_tax$p_adj, 3)
+univar_res_tax$R2 = univar_res_tax$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_tax, aes(reorder(clinical, univar_res_tax$R2), y = R2, label = univar_res_tax$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_tax$data_type = c("Taxonomy")
+```
+
+\newpage
+
+## Pairwise comparisons 
+
+Pairwise comparisons of the beta diversity between the different diagnoses.   
+
+```{r pairwise_diagnosis_tax, echo = FALSE, warning = FALSE, message = FALSE}
+
+bray_mat = as.matrix(bray)
+tax_pair_dia = pairwise.adonis(bray_mat, factors = stat_meta$diagnosis, p.adjust.m = "BH")
+
+tax_pair_dia %>%
+  kbl() %>%
+  kable_minimal()
+
+```
+
+\newpage
+
+Pairwise comparisons of the beta diversity between the different inflammation status categories.  
+
+```{r pairwise_inflammation_tax, echo = FALSE, warning = FALSE, message = FALSE}
+tax_pair_inflam = pairwise.adonis(bray_mat, factors = stat_meta$inflammation, p.adjust.m = "BH")
+
+tax_pair_inflam %>%
+  kbl() %>%
+  kable_minimal()
+```
+
+\newpage
+
+Pairwise comparisons of the beta diversity between the different inflammation status categories.  
+
+```{r pairwise_batch_tax, echo = FALSE, warning = FALSE, message = FALSE}
+tax_pair_batch = pairwise.adonis(bray_mat, factors = stat_meta$batch, p.adjust.m = "BH")
+
+tax_pair_batch %>%
+  kbl() %>%
+  kable_minimal()
+```
+
+\newpage
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by diagnosis.
+
+```{r bray_comparisons_tax_diangosis, echo= FALSE, warning = FALSE, message = FALSE, dpi=300}
+
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_col", "diagnosis_row", "row", "col", "bray_distance")
+
+df_HC_dia_tax = subset(bray_df, diagnosis_row == "HC")
+df_HC_dia_tax$comparisons = paste(df_HC_dia_tax$diagnosis_col, df_HC_dia_tax$diagnosis_row, sep = "_")
+
+ggplot(df_HC_dia_tax, aes(x = diagnosis_col, y = bray_distance, color = diagnosis_col, add = "jitter")) + geom_boxplot(lwd =2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_diagnosis) + labs(color = "Patient diagnosis")
+
+df_HC_dia_tax$data_type = "Taxonomy"
+
+```
+
+\newpage
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by inflammation.  
+
+```{r bray_comparisons_tax_inflammation, echo= FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_col", "inflammation_row", "row", "col", "bray_distance")
+
+
+
+df_HC_inflam_tax = subset(bray_df, inflammation_row == "Not inflamed")
+df_HC_inflam_tax$comparisons = paste(df_HC_inflam_tax$inflammation_col, df_HC_inflam_tax$inflammation_row, sep = "_")
+df_HC_inflam_tax$inflammation_col = ordered(df_HC_inflam_tax$inflammation_col, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+
+ggplot(df_HC_inflam_tax, aes(x = inflammation_col, y = bray_distance, color = inflammation_col, add = "jitter")) + geom_boxplot(lwd = 2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation (CRP)")
+
+df_HC_inflam_tax$data_type = "Taxonomy"
+
+```
+
+
+\newpage
+## PCoA all data
+Colored by diagnosis
+
+```{r pcoa_tax_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+pc = capscale(bray~1, comm = dat_taxa_species_common)
+cap = data.frame(pc$CA$u)
+cap = merge(stat_meta, cap, by = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+
+data_wa = data.frame(wascores(pc$CA$u[, 1:2], dat_taxa_species_common))
+data_wa_sub = data_wa[which(abs(data_wa$MDS1)>0.045 | abs(data_wa$MDS2)>0.045),]
+
+ggplot(cap, aes(MDS1, MDS2)) + geom_point(aes(color = diagnosis), size = 2, alpha = 0.7) + theme_bw(base_size = 16)  + scale_color_manual(values = col_diagnosis) + scale_alpha_manual(guide='none', values = list(a = 0.2, point = 1)) + labs(color = "Patient diagnosis") + coord_fixed() + theme(legend.position = "NONE") +
+  labs(title="",
+       x = paste("Axis 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+       y = paste("Axis 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+#pdf("PCoA_cross_poster_diagnosis.pdf",width=7,height=6)
+#print(p)
+#dev.off()
+
+```
+
+
+\newpage
+Colored by inflammation with species overlay.  
+
+```{r pcoa_tax_inflammation, echo = FALSE, warning = FALSE, message = FALSE, fig.height= 5, fig.width=6.5, dpi = 600}
+library(shadowtext)
+library(ggExtra)
+cap$inflammation = ordered(cap$inflammation, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+row.names(data_wa_sub) = gsub("s__", "", row.names(data_wa_sub))
+row.names(data_wa_sub) = gsub("_", " ", row.names(data_wa_sub))
+data_wa_sub = subset(data_wa_sub, row.names(data_wa_sub) != "Clostridium clostridioforme")
+
+grob = grobTree(textGrob("PERMANOVA: R-sq  = 0.012, FDR p-val = 0.002", x = 0.58, y = 0.98, gp=gpar(col="black", fontsize=9)))
+#png("PCOA_inflammation_manuscript.png", height = 5, width = 6.5, units = "in", res = 600)
+pcoa_plot = ggplot(cap, aes(MDS1, MDS2)) + geom_point(aes(color = inflammation), size = 2, alpha = 0.65) + 
+  theme_bw(base_size = 12) + scale_color_manual(values = col_inflammation) +  coord_fixed() + geom_shadowtext(data=data_wa_sub, aes(x = data_wa_sub$MDS1, y = data_wa_sub$MDS2, label = rownames(data_wa_sub)), check_overlap = TRUE, vjust = 0, hjust = 0.57, size = 3, fontface = "italic",color = "black", bg.color = "white") + labs(color = "Inflammation (CRP)") +  theme(legend.position = "NONE") + annotation_custom(grob) +
+  labs(title="", 
+       x = paste("Axis 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+       y = paste("Axis 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+#dev.off()
+#png("PCOA_inflammation_density_manuscript.png", height = 5, width = 6.5, units = "in", res = 600)
+pcoa_density = ggExtra::ggMarginal(pcoa_plot, size = 7, colour = NA, groupFill = TRUE, groupColour = T)
+print(pcoa_density)
+#dev.off()
+```
+
+\newpage
+
+Colored by hemoglobin  
+
+
+```{r pcoa_hemo_plot_tax, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("PCOA_hemoglobin.png", height = 4, width = 5, units = "in", res = 600)
+ggplot(cap, aes(MDS1, MDS2)) + geom_point(aes(color = haemoglobin), size = 3, alpha = 0.7) + 
+  theme_bw(base_size = 12) + scale_color_viridis(option = "D")  + coord_fixed() + labs(color = "Hemoglobin") + 
+  labs(title="", 
+       x = paste("Axis 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+       y = paste("Axis 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+#dev.off()
+```
+
+
+\newpage
+
+Colored by the relative abundance of the phylum Firmicutes in each sample.  
+
+```{r Firm_plot_tax, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+cap$Firmicutes = dat_phylum[match(row.names(cap), row.names(dat_phylum)), "p__Firmicutes"]
+cap$Bacteroidetes = dat_phylum[match(row.names(cap), row.names(dat_phylum)), "p__Bacteroidetes"]
+
+#png("PCOA_jia_Firm.png", height = 10, width = 10, units = "in", res = 600)
+ggplot(cap, aes(MDS1, MDS2)) + geom_point(aes(color = Firmicutes), size = 3, alpha = 0.7) + 
+  theme_bw() + scale_color_viridis(option = "D")  + coord_fixed(1) +
+  labs(title="", 
+       x = paste("Axis 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+       y = paste("Axis 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+#dev.off()
+```
+\newpage
+
+Colored by the relative abundance of the phylum Bacteroidetes in each sample.   
+
+```{r Bac_plot_tax, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+#png("PCOA_jia_Bacteroidetes.png", height = 10, width = 10, units = "in", res = 600)
+ggplot(cap, aes(MDS1, MDS2)) + geom_point(aes(color = Bacteroidetes), size = 3, alpha = 0.7) + 
+  theme_bw() + scale_color_viridis(option = "D")  + coord_fixed() +
+  labs(title="", 
+       x = paste("Axis 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+       y = paste("Axis 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+#dev.off()
+```
+
+
+\newpage
+
+# Per-feature difference  
+
+## Species  
+
+Model = _feature ~ Age + diagnosis.endpoint_  
+
+``` {r maaslin2_heatmap_species, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 7, fig.height = 10}
+maas_species_inflam = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Species/maaslin2_taxonomy_inflam_wo_tech/significant_results.tsv", sep = "\t")
+maas_species_inflam = subset(maas_species_inflam, value == "Inflammation" | value == "Some ")
+maas_species_inflam$value = gsub("Some ", "Some inflammation", maas_species_inflam$value)
+
+maas_species_dia = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Species/maaslin2_taxonomy_diagnosis_wo_tech/significant_results.tsv", sep = "\t")
+maas_species_dia = subset(maas_species_dia, value == "RA" | value == "AS")
+
+maas_species_hem = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Species/maaslin2_taxonomy_hemo_cat_wo_tech/significant_results.tsv", sep = "\t")
+maas_species_hem = subset(maas_species_hem, value == "Normal")
+maas_species_hem$coef = maas_species_hem$coef * -1
+maas_species_hem$value = gsub("Normal", "Anemia", maas_species_hem$value)
+
+phyla = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Species/significant_species.csv", sep = ",")
+
+maas_species = rbind(maas_species_inflam, maas_species_dia, maas_species_hem)
+
+maas_species$cor = -log(maas_species$qval)*sign(maas_species$coef)
+maas_species$stars = cut(maas_species$qval, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+
+maas_species$feature = mgsub(as.character(maas_species$feature), c("s__", "_"), c("", " "))
+maas_species$feature = gsub(" bacterium .*", " bacterium", maas_species$feature)
+maas_species$feature = gsub(" sp .*", " sp", maas_species$feature)
+
+maas_species$phyla = phyla[match(maas_species$feature, phyla$feature), "phylum"]
+maas_species$phyla = gsub("Proteobacteria|Euryarchaeota|Verrucomicrobia", "other", maas_species$phyla)
+
+maas_species$value = factor(maas_species$value, levels = c("Anemia", "AS", "RA", "Inflammation", "Some inflammation"))
+#png("MaAsLin2_heatmap_taxonomy.png", height = 4, width = 10, res = 600, units = "in")
+ggplot(aes(reorder(feature, cor), y= value, fill= cor), data= maas_species) + geom_tile() + scale_fill_gradient2(low="#2C7BB6", mid="white", high="#D7191C", limits = c(-8.5, 18), breaks = c(-9, -6, -3, 0, 3, 6, 9, 12, 15, 18)) + geom_text(aes(label=stars), color="black", size=2) + labs(y=NULL, x=NULL, fill="-log(qval) * sign(Coef)") + theme_classic(base_size = 10) + theme(legend.position="bottom") + coord_flip() + facet_grid(phyla ~ ., space = "free", scales = "free_y")
+#dev.off()
+```
+
+\newpage
+
+## Genus  
+
+Model = _feature ~ Age + diagnosis.endpoint_  
+
+``` {r maaslin2_heatmap_genus, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 7, fig.height = 7}
+maas_genus_inflam = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Genus/maaslin2_taxonomy_inflam_wo_tech_genus/significant_results.tsv", sep = "\t")
+maas_genus_inflam = subset(maas_genus_inflam, value == "Inflammation" | value == "Some ")
+maas_genus_inflam$value = gsub("Some ", "Some inflammation", maas_genus_inflam$value)
+
+maas_genus_dia = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Genus/maaslin2_taxonomy_diagnosis_wo_tech_genus/significant_results.tsv", sep = "\t")
+maas_genus_dia = subset(maas_genus_dia, value == "RA" | value == "AS")
+
+maas_genus_hem = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Genus/maaslin2_taxonomy_hemo_cat_wo_tech_genus/significant_results.tsv", sep = "\t")
+maas_genus_hem = subset(maas_genus_hem, value == "Normal")
+maas_genus_hem$coef = maas_genus_hem$coef * -1
+maas_genus_hem$value = gsub("Normal", "Anemia", maas_genus_hem$value)
+
+phyla = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Genus/significant_genus.csv", sep = ",")
+
+maas_genus = rbind(maas_genus_inflam, maas_genus_dia, maas_genus_hem)
+
+maas_genus$cor = -log(maas_genus$qval)*sign(maas_genus$coef)
+maas_genus$stars = cut(maas_genus$qval, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+
+maas_genus$feature = gsub("g__", "", maas_genus$feature)
+maas_genus$feature = gsub("_.*", "", maas_genus$feature)
+
+maas_genus$phyla = phyla[match(maas_genus$feature, phyla$feature), "phylum"]
+maas_genus$phyla = gsub("Proteobacteria|Euryarchaeota|Verrucomicrobia", "other", maas_genus$phyla)
+
+maas_genus$value = factor(maas_genus$value, levels = c("Anemia", "AS", "RA", "Inflammation", "Some inflammation"))
+#png("MaAsLin2_heatmap_taxonomy.png", height = 4, width = 10, res = 600, units = "in")
+ggplot(aes(reorder(feature, cor), y= value, fill= cor), data= maas_genus) + geom_tile() + scale_fill_gradient2(low="#2C7BB6", mid="white", high="#D7191C", limits = c(-7, 9), breaks = c(-7, -5, -3, 0, 3, 6, 9)) + geom_text(aes(label=stars), color="black", size=2) + labs(y=NULL, x=NULL, fill="-log(qval) * sign(Coef)") + theme_classic(base_size = 10) + theme(legend.position="bottom") + coord_flip() + facet_grid(phyla ~ ., space = "free", scales = "free_y")
+#dev.off()
+```
+
+\newpage
+
+## Family  
+
+Model = _feature ~ Age + diagnosis.endpoint_  
+
+``` {r maaslin2_heatmap_family, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 6, fig.height = 6}
+maas_family_inflam = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Family/maaslin2_taxonomy_inflam_wo_tech_family/significant_results.tsv", sep = "\t")
+maas_family_inflam = subset(maas_family_inflam, value == "Inflammation" | value == "Some ")
+maas_family_inflam$value = gsub("Some ", "Some inflammation", maas_family_inflam$value)
+
+maas_family_dia = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Family/maaslin2_taxonomy_diagnosis_wo_tech_family/significant_results.tsv", sep = "\t")
+maas_family_dia = subset(maas_family_dia, value == "RA" | value == "AS")
+
+maas_family_hem = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Family/maaslin2_taxonomy_hemo_cat_wo_tech_family/significant_results.tsv", sep = "\t")
+maas_family_hem = subset(maas_family_hem, value == "Normal")
+maas_family_hem$coef = maas_family_hem$coef * -1
+maas_family_hem$value = gsub("Normal", "Anemia", maas_family_hem$value)
+
+phyla = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Family/significant_family.csv", sep = ",")
+
+maas_family = rbind(maas_family_inflam, maas_family_dia, maas_family_hem)
+
+maas_family$cor = -log(maas_family$qval)*sign(maas_family$coef)
+maas_family$stars = cut(maas_family$qval, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+
+maas_family$feature = gsub("f__", "", maas_family$feature)
+maas_family$feature = gsub("_.*", "", maas_family$feature)
+
+maas_family$phyla = phyla[match(maas_family$feature, phyla$feature), "phylum"]
+maas_family$phyla = gsub("Proteobacteria|Euryarchaeota|Verrucomicrobia|Actinobacterium", "other", maas_family$phyla)
+
+maas_family$value = factor(maas_family$value, levels = c("Anemia", "AS", "RA", "Inflammation", "Some inflammation"))
+#png("MaAsLin2_heatmap_taxonomy.png", height = 4, width = 10, res = 600, units = "in")
+ggplot(aes(reorder(feature, cor), y= value, fill= cor), data= maas_family) + geom_tile() + scale_fill_gradient2(low="#2C7BB6", mid="white", high="#D7191C", limits = c(-5.5, 9), breaks = c(-6, -3, 0, 3, 6, 9)) + geom_text(aes(label=stars), color="black", size=2) + labs(y=NULL, x=NULL, fill="-log(qval) * sign(Coef)") + theme_classic(base_size = 10) + theme(legend.position="bottom") + coord_flip() + facet_grid(phyla ~ ., space = "free", scales = "free_y")
+#dev.off()
+```
+
+\newpage
+
+## Order  
+
+Model = _feature ~ Age + diagnosis.endpoint_  
+
+``` {r maaslin2_heatmap_order, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 6, fig.height = 4}
+maas_order_inflam = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Order/maaslin2_taxonomy_inflam_wo_tech_order/significant_results.tsv", sep = "\t")
+maas_order_inflam = subset(maas_order_inflam, value == "Inflammation" | value == "Some ")
+maas_order_inflam$value = gsub("Some ", "Some inflammation", maas_order_inflam$value)
+
+maas_order_dia = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Order/maaslin2_taxonomy_diagnosis_wo_tech_order/significant_results.tsv", sep = "\t")
+maas_order_dia = subset(maas_order_dia, value == "RA" | value == "AS")
+
+maas_order_hem = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Order/maaslin2_taxonomy_hemo_cat_wo_tech_order/significant_results.tsv", sep = "\t")
+maas_order_hem = subset(maas_order_hem, value == "Normal")
+maas_order_hem$coef = maas_order_hem$coef * -1
+maas_order_hem$value = gsub("Normal", "Anemia", maas_order_hem$value)
+
+maas_order = rbind(maas_order_inflam, maas_order_dia, maas_order_hem)
+
+maas_order$cor = -log(maas_order$qval)*sign(maas_order$coef)
+maas_order$stars = cut(maas_order$qval, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+
+maas_order$feature = gsub("o__", "", maas_order$feature)
+
+maas_order$value = factor(maas_order$value, levels = c("Anemia", "AS", "RA", "Inflammation", "Some inflammation"))
+#png("MaAsLin2_heatmap_taxonomy.png", height = 4, width = 10, res = 600, units = "in")
+ggplot(aes(reorder(feature, cor), y= value, fill= cor), data= maas_order) + geom_tile() + scale_fill_gradient2(low="#2C7BB6", mid="white", high="#D7191C", limits = c(-5.5, 11), breaks = c(-6, -3, 0, 3, 6, 9, 12)) + geom_text(aes(label=stars), color="black", size=2) + labs(y=NULL, x=NULL, fill="-log(qval) * sign(Coef)") + theme_classic(base_size = 10) + theme(legend.position="bottom") + coord_flip() 
+#dev.off()
+```
+
+\newpage
+
+## Class   
+
+Model = _feature ~ Age + diagnosis.endpoint_  
+
+``` {r maaslin2_heatmap_class, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 6, fig.height = 4}
+maas_class_inflam = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Class/maaslin2_taxonomy_inflam_wo_tech_class/significant_results.tsv", sep = "\t")
+maas_class_inflam = subset(maas_class_inflam, value == "Inflammation" | value == "Some ")
+maas_class_inflam$value = gsub("Some ", "Some inflammation", maas_class_inflam$value)
+
+maas_class_dia = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Class/maaslin2_taxonomy_diagnosis_wo_tech_class/significant_results.tsv", sep = "\t")
+maas_class_dia = subset(maas_class_dia, value == "RA" | value == "AS")
+
+maas_class_hem = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Class/maaslin2_taxonomy_hemo_cat_wo_tech_class/significant_results.tsv", sep = "\t")
+maas_class_hem = subset(maas_class_hem, value == "Normal")
+maas_class_hem$coef = maas_class_hem$coef * -1
+maas_class_hem$value = gsub("Normal", "Anemia", maas_class_hem$value)
+
+maas_class = rbind(maas_class_inflam, maas_class_dia, maas_class_hem)
+
+maas_class$cor = -log(maas_class$qval)*sign(maas_class$coef)
+maas_class$stars = cut(maas_class$qval, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+
+maas_class$feature = gsub("c__", "", maas_class$feature)
+maas_class$feature = gsub("_.*", "", maas_class$feature)
+
+maas_class$value = factor(maas_class$value, levels = c("Anemia", "AS", "RA", "Inflammation", "Some inflammation"))
+#png("MaAsLin2_heatmap_taxonomy.png", height = 4, width = 10, res = 600, units = "in")
+ggplot(aes(reorder(feature, cor), y= value, fill= cor), data= maas_class) + geom_tile() + scale_fill_gradient2(low="#2C7BB6", mid="white", high="#D7191C", limits = c(-5, 11), breaks = c(-6, -3, 0, 3, 6, 9, 12)) + geom_text(aes(label=stars), color="black", size=2) + labs(y=NULL, x=NULL, fill="-log(qval) * sign(Coef)") + theme_classic(base_size = 10) + theme(legend.position="bottom") + coord_flip() 
+#dev.off()
+```
+
+\newpage
+
+## Phylum     
+
+Model = _feature ~ Age + diagnosis.endpoint_  
+
+``` {r maaslin2_heatmap_phylum, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 3, fig.height = 2}
+maas_phylum_inflam = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Phylum/maaslin2_taxonomy_inflam_wo_tech_phylum/significant_results.tsv", sep = "\t")
+maas_phylum_inflam = subset(maas_phylum_inflam, value == "Inflammation" | value == "Some ")
+maas_phylum_inflam$value = gsub("Some ", "Some inflammation", maas_phylum_inflam$value)
+
+maas_phylum_dia = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Phylum/maaslin2_taxonomy_diagnosis_wo_tech_phylum/significant_results.tsv", sep = "\t")
+maas_phylum_dia = subset(maas_phylum_dia, value == "RA" | value == "AS")
+
+maas_phylum_hem = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_2/MaAsLin2_Taxonomy/Phylum/maaslin2_taxonomy_hemo_cat_wo_tech_phylum/significant_results.tsv", sep = "\t")
+maas_phylum_hem = subset(maas_phylum_hem, value == "Normal")
+maas_phylum_hem$coef = maas_phylum_hem$coef * -1
+maas_phylum_hem$value = gsub("Normal", "Anemia", maas_phylum_hem$value)
+
+maas_phylum = rbind(maas_phylum_inflam, maas_phylum_dia, maas_phylum_hem)
+
+maas_phylum$cor = -log(maas_phylum$qval)*sign(maas_phylum$coef)
+maas_phylum$stars = cut(maas_phylum$qval, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+
+maas_phylum$feature = gsub("p__", "", maas_phylum$feature)
+maas_phylum$feature = gsub("_.*", "", maas_phylum$feature)
+
+maas_phylum$value = factor(maas_phylum$value, levels = c("Anemia", "AS", "RA", "Inflammation", "Some inflammation"))
+#png("MaAsLin2_heatmap_taxonomy.png", height = 4, width = 10, res = 600, units = "in")
+ggplot(aes(reorder(feature, cor), y= value, fill= cor), data= maas_phylum) + geom_tile() + scale_fill_gradient2(low="#2C7BB6", mid="white", high="#D7191C", limits = c(-6, 2), breaks = c(-6, -4, -2, 0, 2)) + geom_text(aes(label=stars), color="black", size=2) + labs(y=NULL, x=NULL, fill="-log(qval) * sign(Coef)") + theme_classic(base_size = 10) + theme(legend.position="bottom") + coord_flip() 
+#dev.off()
+```
+
+
+\newpage
+
+# randomForest 
+Random Forest analysis on 1. arcsin(bugs) + age 2. Immune cytokines + age 3. arcsin(bugs) + immune + age <-- least NA's. 
+Set with a root of 123 and 1000 trees.  
+
+## Bugs   
+
+```{r setup_all, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+### 07/22/19 Started the RF analysis ###
+str(stat_meta)
+##Attempting this compare the HC to those patients with inflammation
+
+rf_meta = stat_meta[, c(1,4:8, 10:14, 16)]
+rf_meta = subset(rf_meta, inflammation == "Not inflamed" | inflammation == "Inflammation")
+rf_meta = rf_meta[rf_meta$diagnosis == "HC" & rf_meta$inflammation == "Not inflamed" | rf_meta$inflammation == "Inflammation", ]
+#rf_meta = rf_meta[complete.cases(rf_meta),]
+
+rf_meta_bugs = rf_meta[, -c(2:9)]
+
+```
+
+```{r setup_randomforest_tax, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rf_meta_bugs[, c(1,3:4)] = lapply(rf_meta_bugs[, c(1,3:4)], as.factor)
+
+#species_rf = asinh(dat_taxa_species_common)
+AST <- function(x) {
+    return(sign(x) * asin(sqrt(abs(x))))
+}
+
+species_rf = apply(dat_taxa_species_common, 2, AST)
+species_rf = data.frame(species_rf)
+species_rf = species_rf[row.names(species_rf) %in% row.names(rf_meta), ]
+dat_rf = merge(rf_meta_bugs, species_rf, by = "row.names")
+row.names(dat_rf) = dat_rf$Row.names
+dat_rf$Row.names = NULL
+
+
+# CROSS-VALIDATE 5-fold to determine number of predictors for random forest model
+rf_crossval = rfcv(dat_rf, dat_rf[,3], step = 0.8 )
+# check how error increases with decreased number of predictors
+rf_crossval$error.cv
+with(rf_crossval, plot(n.var, error.cv, log="x", type="o", lwd=2)) # 50? predictors
+
+# separate data into testing and training sets.
+set.seed(123)
+samp <- sample(nrow(dat_rf), 0.8 * nrow(dat_rf))
+train <- dat_rf[samp, ]
+test <- dat_rf[-samp, ]
+
+# build the basic model, using 111 predictors based on cross-validation above
+names(train)
+basic_model_bugs = randomForest(inflammation ~ ., mtry = 50, data = train, ntree = 1000, importance = T, proximity = T, confusion = T, err.rate = T, nodesize = 1)
+
+### Importance 
+imp_bugs = importance(basic_model_bugs)
+imp_bugs = data.frame(predictors = rownames(imp_bugs), imp_bugs)
+imp_bugs = arrange(imp_bugs, desc(MeanDecreaseGini))
+imp_bugs$predictors = factor(imp_bugs$predictors, levels = imp_bugs$predictors)
+
+# Select the top 50 predictors
+imp_bugs_top = imp_bugs[1:20, ]
+
+```
+
+```{r model_information_bugs, echo = FALSE, warning = FALSE, message = FALSE}
+basic_model_bugs
+```
+
+\newpage
+
+### Top predictors 
+
+```{r important_gini_tax, echo = FALSE, warning = FALSE, message = FALSE}
+imp_bugs_top$predictors = gsub("s__", "", imp_bugs_top$predictors)
+imp_bugs_top$predictors = gsub("_", " ", imp_bugs_top$predictors)
+imp_bugs_top$predictors = gsub(" bacterium .*", " bacterium", imp_bugs_top$predictors)
+imp_bugs_top$predictors = factor(imp_bugs_top$predictors, levels = imp_bugs_top$predictors)
+ggplot(imp_bugs_top, aes(x = predictors, y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "#5F9EA0") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease gini score") +
+  ggtitle("") + theme_bw(base_size = 10) + theme(axis.text.y = element_text(face = "italic"))
+```
+
+\newpage 
+
+Accuracy of predictors
+
+```{r important_accuracy_tax, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(imp_bugs_top, aes(x = predictors, y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#6A5ACD") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease accuracy") +
+  ggtitle("") + theme_bw(base_size = 10) + theme(axis.text.y = element_text(face = "italic"))
+```
+
+\newpage
+ROC curves     
+
+```{r basic_roc_tax, echo = FALSE, warning = FALSE, message = FALSE}
+
+pred_test_bugs = predict(basic_model_bugs, test, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+
+pred_test_bugs <- data.frame(pred_test_bugs)
+library(pROC)
+pred_test_roc_bugs <- roc(test$inflammation, pred_test_bugs$Not.inflamed)
+#auc(pred_test_roc)
+
+#plot(pred_test_roc)
+ggroc(pred_test_roc_bugs, lwd=1.2, col="blue")+
+geom_abline(intercept = 1, slope = 1, color = "red", linetype = "dashed", lwd=1.2) + theme_bw()
+
+
+```
+
+
+
+\newpage
+
+# Individual features   
+
+## _Ruminococcus gnavus_ by inflammation   
+
+* <-- in the manuscript   
+
+```{r rgnavus_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 600}
+#dat_taxa_species_common = data.frame(t(dat_taxa_species_common), check.names = F)
+
+r_gnavus = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Ruminococcus_gnavus)
+names(r_gnavus) = c("Samples", "rel_abun")
+r_gnavus$inflammation = stat_meta[match(r_gnavus$Samples, row.names(stat_meta)), "inflammation"]
+
+zero_gnavus = subset(r_gnavus, rel_abun == 0)
+zero_gnavus$inflammation = stat_meta[match(zero_gnavus$Samples, row.names(stat_meta)), "inflammation"]
+
+nonzero_gnavus = subset(r_gnavus, rel_abun != 0)
+nonzero_gnavus$inflammation = stat_meta[match(nonzero_gnavus$Samples, row.names(stat_meta)), "inflammation"]
+tmp = subset(nonzero_gnavus, inflammation == "Not inflamed")
+median_value = median(tmp$rel_abun)
+
+nonzero_gnavus$rel_abun = log10(nonzero_gnavus$rel_abun/median_value)
+
+table1 = data.frame(table(r_gnavus$inflammation))
+table2 = data.frame(table(zero_gnavus$inflammation))
+zero_gnavus_final = merge(table1, table2, by = "Var1")
+names(zero_gnavus_final) = c("inflammation", "total", "zeros")
+zero_gnavus_final$porportion = zero_gnavus_final$zeros / zero_gnavus_final$total *100
+
+zero_gnavus_final$inflammation = factor(zero_gnavus_final$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+zero_gnavus_final = subset(zero_gnavus_final, inflammation != "Not recorded")
+zeroplots_rgnavus_inflamm = ggplot(zero_gnavus_final, aes(x = inflammation, y = porportion, fill = inflammation)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_inflammation) + ylab("Proportion of zeros") + xlab ("")  + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())  + theme(legend.position = "NONE")
+
+nonzero_gnavus = subset(nonzero_gnavus, inflammation != "Not recorded")
+nonzero_gnavus$inflammation = factor(nonzero_gnavus$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+
+#png("r_gnavus_denisty_inflammation.png", height = 3, width = 7, units = "in", res = 600)
+density_rgnavus_inflam = ggplot(nonzero_gnavus, aes(x = rel_abun, y= inflammation, fill = inflammation)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_inflammation) + xlim(-3, 4) + theme_classic(base_size = 14)+ labs(fill = "Inflammation Status (CRP)", title = "Ruminococcus gnavus") + ylab("Density") + xlab("log10(abundance relative to HC median)") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+#dev.off()
+grid.arrange(zeroplots_rgnavus_inflamm, density_rgnavus_inflam, ncol = 2, nrow = 1, widths = c(2, 4))
+
+
+```
+
+\newpage
+
+_Ruminococcus gnavus_ by patient diagnosis   
+
+```{r maaslin2_rgnavus_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+tax_maas = dat_taxa_species_common
+tax_maas$inflammation = stat_meta[ match( row.names(tax_maas),  row.names(stat_meta)), "inflammation"  ]
+tax_maas$inflammation = recode(tax_maas$inflammation, "Not inflamed" = "Not", "Some inflammation" = "Some", "Inflammation" = "Inflam", "Not recorded/Not known" = "Not recorded")
+tax_maas$inflammation = ordered(tax_maas$inflammation, c("Not", "Some", "Inflam", "Not recorded"))
+col_inflammation_plot = c("Inflam" = "#B22222", "Some" = "#FF8C00", "Not" = "#4682B4", "Not recorded" = "#808080")
+tax_maas$diagnosis = stat_meta[ match( row.names(tax_maas),  row.names(stat_meta)), "diagnosis"  ]
+tax_maas$diagnosis = factor(tax_maas$diagnosis, levels = c("HC", "NIJP", "RA", "AS", "PsA"))
+tax_maas$hemo = stat_meta[ match( row.names(tax_maas),  row.names(stat_meta)), "haemoglobin"  ]
+
+ggplot(tax_maas, aes(x= diagnosis, y = tax_maas$s__Ruminococcus_gnavus, color = diagnosis)) + geom_boxplot(lwd = 1.5, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Patient diagnosis") + ylab("Ruminococcus gnavus") + scale_color_manual(values = col_diagnosis) + geom_jitter(shape=16, position=position_jitter(0.2), size = 2) + theme(legend.position = "NONE")
+```
+
+\newpage
+
+## _Streptococcus vestibularis_ by inflammation   
+
+*<-- in the manuscript  
+
+
+```{r svest_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 600}
+#dat_taxa_species_common = data.frame(t(dat_taxa_species_common), check.names = F)
+
+s_vest = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Streptococcus_vestibularis)
+names(s_vest) = c("Samples", "rel_abun")
+s_vest$inflammation = stat_meta[match(s_vest$Samples, row.names(stat_meta)), "inflammation"]
+
+zero_s_vest = subset(s_vest, rel_abun == 0)
+zero_s_vest$inflammation = stat_meta[match(zero_s_vest$Samples, row.names(stat_meta)), "inflammation"]
+
+nonzero_s_vest = subset(s_vest, rel_abun != 0)
+nonzero_s_vest$inflammation = stat_meta[match(nonzero_s_vest$Samples, row.names(stat_meta)), "inflammation"]
+tmp = subset(nonzero_s_vest, inflammation == "Not inflamed")
+median_value = median(tmp$rel_abun)
+
+nonzero_s_vest$rel_abun = log10(nonzero_s_vest$rel_abun/median_value)
+
+table1 = data.frame(table(s_vest$inflammation))
+table2 = data.frame(table(zero_s_vest$inflammation))
+zero_s_vest_final = merge(table1, table2, by = "Var1")
+names(zero_s_vest_final) = c("inflammation", "total", "zeros")
+zero_s_vest_final$porportion = zero_s_vest_final$zeros / zero_s_vest_final$total *100
+
+zero_s_vest_final$inflammation = factor(zero_s_vest_final$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+zero_s_vest_final = subset(zero_s_vest_final, inflammation != "Not recorded")
+zeroplots_s_vest_inflamm = ggplot(zero_s_vest_final, aes(x = inflammation, y = porportion, fill = inflammation)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_inflammation) + ylab("Proportion of zeros") + xlab ("")  + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())  + theme(legend.position = "NONE")
+
+nonzero_s_vest = subset(nonzero_s_vest, inflammation != "Not recorded")
+nonzero_s_vest$inflammation = factor(nonzero_s_vest$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+
+#png("s_vest_denisty_inflammation.png", height = 3, width = 7, units = "in", res = 600)
+density_s_vest_inflam = ggplot(nonzero_s_vest, aes(x = rel_abun, y= inflammation, fill = inflammation)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_inflammation) + xlim(-3, 4) + theme_classic(base_size = 14)+ labs(fill = "Inflammation Status (CRP)", title = "Streptococcus vestibularis") + ylab("Density") + xlab("log10(abundance relative to HC median)") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+#dev.off()
+grid.arrange(zeroplots_s_vest_inflamm, density_s_vest_inflam, ncol = 2, nrow = 1, widths = c(2, 4))
+
+
+```
+
+\newpage
+
+_Streptococcus vestibularis_ by patient diagnosis  
+
+```{r maaslin2_strep_vest_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= diagnosis, y = tax_maas$s__Streptococcus_vestibularis, color = diagnosis)) +geom_boxplot(lwd = 1.5, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Patient diagnosis") + ylab("Streptococcus vestibularis") + scale_color_manual(values = col_diagnosis) + geom_jitter(shape=16, position=position_jitter(0.2), size = 2) + theme(legend.position = "NONE")
+```
+
+\newpage
+
+## _Anaerostipes hadrus_ by inflammation   
+
+*<-- in the manuscript  
+
+
+```{r ahardus_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 300}
+#dat_taxa_species_common = data.frame(t(dat_taxa_species_common), check.names = F)
+
+a_hardus = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Anaerostipes_hadrus)
+names(a_hardus) = c("Samples", "rel_abun")
+a_hardus$inflammation = stat_meta[match(a_hardus$Samples, row.names(stat_meta)), "inflammation"]
+
+zero_a_hardus = subset(a_hardus, rel_abun == 0)
+zero_a_hardus$inflammation = stat_meta[match(zero_a_hardus$Samples, row.names(stat_meta)), "inflammation"]
+
+nonzero_a_hardus = subset(a_hardus, rel_abun != 0)
+nonzero_a_hardus$inflammation = stat_meta[match(nonzero_a_hardus$Samples, row.names(stat_meta)), "inflammation"]
+tmp = subset(nonzero_a_hardus, inflammation == "Not inflamed")
+median_value = median(tmp$rel_abun)
+
+nonzero_a_hardus$rel_abun = log10(nonzero_a_hardus$rel_abun/median_value)
+
+table1 = data.frame(table(a_hardus$inflammation))
+table2 = data.frame(table(zero_a_hardus$inflammation))
+zero_a_hardus_final = merge(table1, table2, by = "Var1")
+names(zero_a_hardus_final) = c("inflammation", "total", "zeros")
+zero_a_hardus_final$porportion = zero_a_hardus_final$zeros / zero_a_hardus_final$total *100
+
+zero_a_hardus_final$inflammation = factor(zero_a_hardus_final$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+zero_a_hardus_final = subset(zero_a_hardus_final, inflammation != "Not recorded")
+zeroplots_a_hardus_inflamm = ggplot(zero_a_hardus_final, aes(x = inflammation, y = porportion, fill = inflammation)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_inflammation) + ylab("Proportion of zeros") + xlab ("")  + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())  + theme(legend.position = "NONE")
+
+nonzero_a_hardus = subset(nonzero_a_hardus, inflammation != "Not recorded")
+nonzero_a_hardus$inflammation = factor(nonzero_a_hardus$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+
+#png("a_hardus_denisty_inflammation.png", height = 3, width = 7, units = "in", res = 600)
+density_a_hardus_inflam = ggplot(nonzero_a_hardus, aes(x = rel_abun, y= inflammation, fill = inflammation)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_inflammation) + xlim(-3, 4) + theme_classic(base_size = 14)+ labs(fill = "Inflammation Status (CRP)", title = "Anaerostipes hadrus") + ylab("Density") + xlab("log10(abundance relative to HC median)") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+#dev.off()
+grid.arrange(zeroplots_a_hardus_inflamm, density_a_hardus_inflam, ncol = 2, nrow = 1, widths = c(2, 4))
+
+
+```
+
+\newpage
+
+_Anaerostipes hadrus_ by patient diagnosis  
+
+```{r maaslin2_a_hardus_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= diagnosis, y = tax_maas$s__Anaerostipes_hadrus, color = diagnosis)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Patient diagnosis") + ylab("Anaerostipes hadrus") + scale_color_manual(values = col_diagnosis) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+
+\newpage
+
+## _Escherichia coli_ by inflammation   
+
+*<-- in the manuscript  
+
+
+```{r ecoli_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 600}
+#dat_taxa_species_common = data.frame(t(dat_taxa_species_common), check.names = F)
+
+e_coli = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Escherichia_coli)
+names(e_coli) = c("Samples", "rel_abun")
+e_coli$inflammation = stat_meta[match(e_coli$Samples, row.names(stat_meta)), "inflammation"]
+
+zero_e_coli = subset(e_coli, rel_abun == 0)
+zero_e_coli$inflammation = stat_meta[match(zero_e_coli$Samples, row.names(stat_meta)), "inflammation"]
+
+nonzero_e_coli = subset(e_coli, rel_abun != 0)
+nonzero_e_coli$inflammation = stat_meta[match(nonzero_e_coli$Samples, row.names(stat_meta)), "inflammation"]
+tmp = subset(nonzero_e_coli, inflammation == "Not inflamed")
+median_value = median(tmp$rel_abun)
+
+nonzero_e_coli$rel_abun = log10(nonzero_e_coli$rel_abun/median_value)
+
+table1 = data.frame(table(e_coli$inflammation))
+table2 = data.frame(table(zero_e_coli$inflammation))
+zero_e_coli_final = merge(table1, table2, by = "Var1")
+names(zero_e_coli_final) = c("inflammation", "total", "zeros")
+zero_e_coli_final$porportion = zero_e_coli_final$zeros / zero_e_coli_final$total *100
+
+zero_e_coli_final$inflammation = factor(zero_e_coli_final$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+zero_e_coli_final = subset(zero_e_coli_final, inflammation != "Not recorded")
+zeroplots_e_coli_inflamm = ggplot(zero_e_coli_final, aes(x = inflammation, y = porportion, fill = inflammation)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_inflammation) + ylab("Proportion of zeros") + xlab ("")  + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())  + theme(legend.position = "NONE")
+
+nonzero_e_coli = subset(nonzero_e_coli, inflammation != "Not recorded")
+nonzero_e_coli$inflammation = factor(nonzero_e_coli$inflammation, levels = c("Not inflamed", "Inflammation", "Some inflammation"))
+
+#png("e_coli_denisty_inflammation.png", height = 3, width = 7, units = "in", res = 600)
+density_e_coli_inflam = ggplot(nonzero_e_coli, aes(x = rel_abun, y= inflammation, fill = inflammation)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_inflammation) + xlim(-3, 4) + theme_classic(base_size = 14)+ labs(fill = "Inflammation Status (CRP)", title = "Escherichia coli") + ylab("Density") + xlab("log10(abundance relative to HC median)") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+#dev.off()
+grid.arrange(zeroplots_e_coli_inflamm, density_e_coli_inflam, ncol = 2, nrow = 1, widths = c(2, 4))
+
+
+```
+
+\newpage
+
+_Escherichia coli_ by patient diagnosis  
+
+```{r maaslin2_e_coli_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= diagnosis, y = tax_maas$s__Escherichia_coli, color = diagnosis)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Patient diagnosis") + ylab("Escherichia coli") + scale_color_manual(values = col_diagnosis) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage  
+
+## _Streptococcus salivarius_ by patient diagnosis   
+
+
+```{r s_sal_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 600}
+
+s_sal = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Streptococcus_salivarius)
+names(s_sal) = c("Samples", "rel_abun")
+s_sal$diagnosis = stat_meta[match(s_sal$Samples, row.names(stat_meta)), "diagnosis"]
+
+zero_s_sal = subset(s_sal, rel_abun == 0)
+zero_s_sal$diagnosis = stat_meta[match(zero_s_sal$Samples, row.names(stat_meta)), "diagnosis"]
+
+nonzero_s_sal = subset(s_sal, rel_abun != 0)
+nonzero_s_sal$diagnosis = stat_meta[match(nonzero_s_sal$Samples, row.names(stat_meta)), "diagnosis"]
+tmp = subset(nonzero_s_sal, diagnosis == "HC")
+median_value = median(tmp$rel_abun)
+
+zero_s_sal$diagnosis = factor(zero_s_sal$diagnosis, levels = c("HC", "RA", "AS", "NIJP", "PsA"))
+#This actucally needs to be median of HC - rel_abun- to center the logged rel abun
+nonzero_s_sal$rel_abun = log10(nonzero_s_sal$rel_abun/median_value)
+
+table1 = data.frame(table(s_sal$diagnosis))
+table2 = data.frame(table(zero_s_sal$diagnosis))
+zero_s_sal_final = merge(table1, table2, by = "Var1")
+names(zero_s_sal_final) = c("diagnosis", "total", "zeros")
+zero_s_sal_final$porportion = zero_s_sal_final$zeros / zero_s_sal_final$total *100
+zero_s_sal_final = subset(zero_s_sal_final, diagnosis != "NIJP" & diagnosis != "PsA")
+zero_s_sal_final$diagnosis = factor(zero_s_sal_final$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+
+zeroplots_s_sal = ggplot(zero_s_sal_final, aes(x = diagnosis, y = porportion, fill = diagnosis)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_diagnosis) + ylab("Proportion of zeros") + xlab ("") + theme(legend.position = "NONE") + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+nonzero_s_sal$diagnosis = factor(nonzero_s_sal$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+nonzero_s_sal_final = subset(nonzero_s_sal, diagnosis != "NIJP" & diagnosis != "PsA")
+density_s_sal = ggplot(nonzero_s_sal_final, aes(x = rel_abun, y= diagnosis, fill = diagnosis)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_diagnosis) + xlim(-3, 3) + theme_classic(base_size = 14)+ labs(fill = "Patient Diagnosis", title = "Streptococcus salivarius") + ylab("Density") + xlab("") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+
+grid.arrange(zeroplots_s_sal, density_s_sal, ncol = 2, nrow = 1, widths = c(2, 4))
+
+```
+
+\newpage
+
+_Streptococcus salivarius_ by inflammation status    
+
+```{r maaslin2_s_sal_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= inflammation, y = tax_maas$s__Streptococcus_salivarius, color = inflammation)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Inflammation status") + ylab("Streptococcus salivarius") + scale_color_manual(values = col_inflammation_plot) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage  
+
+## _Methanobrevibacter smithii_ by patient diagnosis      
+
+
+```{r m_smith_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 300}
+
+m_smith = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Methanobrevibacter_smithii)
+names(m_smith) = c("Samples", "rel_abun")
+m_smith$diagnosis = stat_meta[match(m_smith$Samples, row.names(stat_meta)), "diagnosis"]
+
+zero_m_smith = subset(m_smith, rel_abun == 0)
+zero_m_smith$diagnosis = stat_meta[match(zero_m_smith$Samples, row.names(stat_meta)), "diagnosis"]
+
+nonzero_m_smith = subset(m_smith, rel_abun != 0)
+nonzero_m_smith$diagnosis = stat_meta[match(nonzero_m_smith$Samples, row.names(stat_meta)), "diagnosis"]
+tmp = subset(nonzero_m_smith, diagnosis == "HC")
+median_value = median(tmp$rel_abun)
+
+zero_m_smith$diagnosis = factor(zero_m_smith$diagnosis, levels = c("HC", "RA", "AS", "NIJP", "PsA"))
+#This actucally needs to be median of HC - rel_abun- to center the logged rel abun
+nonzero_m_smith$rel_abun = log10(nonzero_m_smith$rel_abun/median_value)
+
+table1 = data.frame(table(m_smith$diagnosis))
+table2 = data.frame(table(zero_m_smith$diagnosis))
+zero_m_smith_final = merge(table1, table2, by = "Var1")
+names(zero_m_smith_final) = c("diagnosis", "total", "zeros")
+zero_m_smith_final$porportion = zero_m_smith_final$zeros / zero_m_smith_final$total *100
+zero_m_smith_final = subset(zero_m_smith_final, diagnosis != "NIJP" & diagnosis != "PsA")
+zero_m_smith_final$diagnosis = factor(zero_m_smith_final$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+
+zeroplots_m_smith = ggplot(zero_m_smith_final, aes(x = diagnosis, y = porportion, fill = diagnosis)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_diagnosis) + ylab("Proportion of zeros") + xlab ("") + theme(legend.position = "NONE") + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+nonzero_m_smith$diagnosis = factor(nonzero_m_smith$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+nonzero_m_smith_final = subset(nonzero_m_smith, diagnosis != "NIJP" & diagnosis != "PsA")
+density_m_smith = ggplot(nonzero_m_smith_final, aes(x = rel_abun, y= diagnosis, fill = diagnosis)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_diagnosis) + xlim(-3, 3) + theme_classic(base_size = 14)+ labs(fill = "Patient Diagnosis", title = "Methanobrevibacter smithii") + ylab("Density") + xlab("") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+
+grid.arrange(zeroplots_m_smith, density_m_smith, ncol = 2, nrow = 1, widths = c(2, 4))
+
+```
+
+\newpage
+
+_Methanobrevibacter smithii_ by inflammation status  
+
+```{r maaslin2_m_smith_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= inflammation, y = tax_maas$s__Methanobrevibacter_smithii, color = inflammation)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Inflammation status") + ylab("Methanobrevibacter smithii") + scale_color_manual(values = col_inflammation_plot) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage  
+
+## _Clostridium hathewayi_ by patient diagnosis      
+
+
+```{r c_hath_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 300}
+
+c_bolt = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Clostridium_bolteae)
+names(c_bolt) = c("Samples", "rel_abun")
+c_bolt$diagnosis = stat_meta[match(c_bolt$Samples, row.names(stat_meta)), "diagnosis"]
+
+zero_c_bolt = subset(c_bolt, rel_abun == 0)
+zero_c_bolt$diagnosis = stat_meta[match(zero_c_bolt$Samples, row.names(stat_meta)), "diagnosis"]
+
+nonzero_c_bolt = subset(c_bolt, rel_abun != 0)
+nonzero_c_bolt$diagnosis = stat_meta[match(nonzero_c_bolt$Samples, row.names(stat_meta)), "diagnosis"]
+tmp = subset(nonzero_c_bolt, diagnosis == "HC")
+median_value = median(tmp$rel_abun)
+
+zero_c_bolt$diagnosis = factor(zero_c_bolt$diagnosis, levels = c("HC", "RA", "AS", "NIJP", "PsA"))
+#This actucally needs to be median of HC - rel_abun- to center the logged rel abun
+nonzero_c_bolt$rel_abun = log10(nonzero_c_bolt$rel_abun/median_value)
+
+table1 = data.frame(table(c_bolt$diagnosis))
+table2 = data.frame(table(zero_c_bolt$diagnosis))
+zero_c_bolt_final = merge(table1, table2, by = "Var1")
+names(zero_c_bolt_final) = c("diagnosis", "total", "zeros")
+zero_c_bolt_final$porportion = zero_c_bolt_final$zeros / zero_c_bolt_final$total *100
+zero_c_bolt_final = subset(zero_c_bolt_final, diagnosis != "NIJP" & diagnosis != "PsA")
+zero_c_bolt_final$diagnosis = factor(zero_c_bolt_final$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+
+zeroplots_c_bolt = ggplot(zero_c_bolt_final, aes(x = diagnosis, y = porportion, fill = diagnosis)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_diagnosis) + ylab("Proportion of zeros") + xlab ("") + theme(legend.position = "NONE") + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+nonzero_c_bolt$diagnosis = factor(nonzero_c_bolt$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+nonzero_c_bolt_final = subset(nonzero_c_bolt, diagnosis != "NIJP" & diagnosis != "PsA")
+density_c_bolt = ggplot(nonzero_c_bolt_final, aes(x = rel_abun, y= diagnosis, fill = diagnosis)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_diagnosis) + xlim(-3, 3) + theme_classic(base_size = 14)+ labs(fill = "Patient Diagnosis", title = "Clostridium hathewayi") + ylab("Density") + xlab("") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+
+grid.arrange(zeroplots_c_bolt, density_c_bolt, ncol = 2, nrow = 1, widths = c(2, 4))
+
+```
+
+\newpage
+
+_Clostridium hathewayi_ by inflammation status  
+
+```{r maaslin2_c_hath_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= inflammation, y = tax_maas$s__Clostridium_bolteae, color = inflammation)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Inflammation status") + ylab("Clostridium hathewayi") + scale_color_manual(values = col_inflammation_plot) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage  
+
+## _Faecalibacterium prausnitzii_ by patient diagnosis      
+
+
+```{r f_prau_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 600}
+
+f_prau = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Faecalibacterium_prausnitzii)
+names(f_prau) = c("Samples", "rel_abun")
+f_prau$diagnosis = stat_meta[match(f_prau$Samples, row.names(stat_meta)), "diagnosis"]
+
+zero_f_prau = subset(f_prau, rel_abun == 0)
+zero_f_prau$diagnosis = stat_meta[match(zero_f_prau$Samples, row.names(stat_meta)), "diagnosis"]
+
+nonzero_f_prau = subset(f_prau, rel_abun != 0)
+nonzero_f_prau$diagnosis = stat_meta[match(nonzero_f_prau$Samples, row.names(stat_meta)), "diagnosis"]
+tmp = subset(nonzero_f_prau, diagnosis == "HC")
+median_value = median(tmp$rel_abun)
+
+zero_f_prau$diagnosis = factor(zero_f_prau$diagnosis, levels = c("HC", "RA", "AS", "NIJP", "PsA"))
+#This actucally needs to be median of HC - rel_abun- to center the logged rel abun
+nonzero_f_prau$rel_abun = log10(nonzero_f_prau$rel_abun/median_value)
+
+table1 = data.frame(table(f_prau$diagnosis))
+table2 = data.frame(table(zero_f_prau$diagnosis))
+zero_f_prau_final = merge(table1, table2, by = "Var1")
+names(zero_f_prau_final) = c("diagnosis", "total", "zeros")
+zero_f_prau_final$porportion = zero_f_prau_final$zeros / zero_f_prau_final$total *100
+zero_f_prau_final = subset(zero_f_prau_final, diagnosis != "NIJP" & diagnosis != "PsA")
+zero_f_prau_final$diagnosis = factor(zero_f_prau_final$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+
+zeroplots_f_prau = ggplot(zero_f_prau_final, aes(x = diagnosis, y = porportion, fill = diagnosis)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_diagnosis) + ylab("Proportion of zeros") + xlab ("") + theme(legend.position = "NONE") + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+nonzero_f_prau$diagnosis = factor(nonzero_f_prau$diagnosis, levels = c("HC", "RA", "AS", "PsA", "NIJP"))
+nonzero_f_prau_final = subset(nonzero_f_prau, diagnosis != "NIJP" & diagnosis != "PsA")
+density_f_prau = ggplot(nonzero_f_prau_final, aes(x = rel_abun, y= diagnosis, fill = diagnosis)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_diagnosis) + xlim(-2, 1) + theme_classic(base_size = 14)+ labs(fill = "Patient Diagnosis", title = "Faecalibacterium prausnitzii") + ylab("Density") + xlab("") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+
+grid.arrange(zeroplots_f_prau, density_f_prau, ncol = 2, nrow = 1, widths = c(2, 4))
+
+```
+
+\newpage
+
+_Faecalibacterium_prausnitzii_ by inflammation status  
+
+```{r maaslin2_f_prau_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= inflammation, y = tax_maas$s__Faecalibacterium_prausnitzii, color = inflammation)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Inflammation status") + ylab("Faecalibacterium prausnitzii") + scale_color_manual(values = col_inflammation_plot) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage  
+
+## _Eubacterium rectale_ by patient diagnosis      
+
+
+```{r e_rec_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 600}
+stat_meta$haemo_cat = as.character(stat_meta$haemoglobin)
+stat_meta$haemo_cat =  ifelse(is.na(stat_meta$haemo_cat) == FALSE, "Normal", as.character(stat_meta$haemo_cat))
+stat_meta$haemo_cat =  ifelse(stat_meta$gender ==  "m" & stat_meta$haemoglobin < 135, "Anemia", as.character(stat_meta$haemo_cat))
+stat_meta$haemo_cat =  ifelse(stat_meta$gender ==  "f" & stat_meta$haemoglobin < 120, "Anemia", as.character(stat_meta$haemo_cat))
+
+
+e_rec = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Eubacterium_rectale)
+names(e_rec) = c("Samples", "rel_abun")
+e_rec$hem = stat_meta[match(e_rec$Samples, row.names(stat_meta)), "haemo_cat"]
+
+zero_e_rec = subset(e_rec, rel_abun == 0)
+zero_e_rec$hem = stat_meta[match(zero_e_rec$Samples, row.names(stat_meta)), "haemo_cat"]
+
+nonzero_e_rec = subset(e_rec, rel_abun != 0)
+nonzero_e_rec$hem = stat_meta[match(nonzero_e_rec$Samples, row.names(stat_meta)), "haemo_cat"]
+tmp = subset(nonzero_e_rec, hem == "Normal")
+median_value = median(tmp$rel_abun)
+
+zero_e_rec$hem = factor(zero_e_rec$hem, levels = c("Normal", "Anemia", "Not recorded"))
+#This actucally needs to be median of HC - rel_abun- to center the logged rel abun
+nonzero_e_rec$rel_abun = log10(nonzero_e_rec$rel_abun/median_value)
+
+table1 = data.frame(table(e_rec$hem))
+table2 = data.frame(table(zero_e_rec$hem))
+zero_e_rec_final = merge(table1, table2, by = "Var1")
+names(zero_e_rec_final) = c("hem", "total", "zeros")
+zero_e_rec_final$porportion = zero_e_rec_final$zeros / zero_e_rec_final$total *100
+zero_e_rec_final = subset(zero_e_rec_final, hem != "Not recorded")
+zero_e_rec_final$hem = factor(zero_e_rec_final$hem, levels = c("Normal", "Anemia"))
+
+zeroplots_e_rec = ggplot(zero_e_rec_final, aes(x = hem, y = porportion, fill = hem)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_rb) + ylab("Proportion of zeros") + xlab ("") + theme(legend.position = "NONE") + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+nonzero_e_rec$hem = factor(nonzero_e_rec$hem, levels = c("Normal", "Anemia", "Not recorded"))
+nonzero_e_rec_final = subset(nonzero_e_rec, hem != "Not recorded")
+density_e_rec = ggplot(nonzero_e_rec_final, aes(x = rel_abun, y= hem, fill = hem)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_rb) + xlim(-3, 1.25) + theme_classic(base_size = 14)+ labs(fill = "Anemia", title = "Eubacterium rectale") + ylab("Density") + xlab("") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+
+grid.arrange(zeroplots_e_rec, density_e_rec, ncol = 2, nrow = 1, widths = c(2, 4))
+
+```
+
+
+\newpage
+
+_Eubacterium rectale_ by inflammation status  
+
+```{r maaslin2_e_rec_inflammation, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= inflammation, y = tax_maas$s__Eubacterium_rectale, color = inflammation)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Inflammation status") + ylab("Eubacterium rectale") + scale_color_manual(values = col_inflammation_plot) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage
+
+_Eubacterium rectale_ by patient diagnosis  
+
+```{r maaslin2_e_rec_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= diagnosis, y = tax_maas$s__Eubacterium_rectale, color = diagnosis)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Patient diagnosis") + ylab("Eubacterium rectale") + scale_color_manual(values = col_diagnosis) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage  
+
+## _Roseburia intestinalis_ by patient diagnosis      
+
+
+```{r r_intest_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 300}
+
+r_intest = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Roseburia_intestinalis)
+names(r_intest) = c("Samples", "rel_abun")
+r_intest$hem = stat_meta[match(r_intest$Samples, row.names(stat_meta)), "haemo_cat"]
+
+zero_r_intest = subset(r_intest, rel_abun == 0)
+zero_r_intest$hem = stat_meta[match(zero_r_intest$Samples, row.names(stat_meta)), "haemo_cat"]
+
+nonzero_r_intest = subset(r_intest, rel_abun != 0)
+nonzero_r_intest$hem = stat_meta[match(nonzero_r_intest$Samples, row.names(stat_meta)), "haemo_cat"]
+tmp = subset(nonzero_r_intest, hem == "Normal")
+median_value = median(tmp$rel_abun)
+
+zero_r_intest$hem = factor(zero_r_intest$hem, levels = c("Normal", "Anemia", "Not recorded"))
+#This actucally needs to be median of HC - rel_abun- to center the logged rel abun
+nonzero_r_intest$rel_abun = log10(nonzero_r_intest$rel_abun/median_value)
+
+table1 = data.frame(table(r_intest$hem))
+table2 = data.frame(table(zero_r_intest$hem))
+zero_r_intest_final = merge(table1, table2, by = "Var1")
+names(zero_r_intest_final) = c("hem", "total", "zeros")
+zero_r_intest_final$porportion = zero_r_intest_final$zeros / zero_r_intest_final$total *100
+zero_r_intest_final = subset(zero_r_intest_final, hem != "Not recorded")
+zero_r_intest_final$hem = factor(zero_r_intest_final$hem, levels = c("Normal", "Anemia"))
+
+zeroplots_r_intest = ggplot(zero_r_intest_final, aes(x = hem, y = porportion, fill = hem)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_rb) + ylab("Proportion of zeros") + xlab ("") + theme(legend.position = "NONE") + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+nonzero_r_intest$hem = factor(nonzero_r_intest$hem, levels = c("Normal", "Anemia", "Not recorded"))
+nonzero_r_intest_final = subset(nonzero_r_intest, hem != "Not recorded")
+density_r_intest = ggplot(nonzero_r_intest_final, aes(x = rel_abun, y= hem, fill = hem)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_rb) + xlim(-3.5, 2) + theme_classic(base_size = 14)+ labs(fill = "Anemia", title = "Roseburia intestinalis") + ylab("Density") + xlab("") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+
+grid.arrange(zeroplots_r_intest, density_r_intest, ncol = 2, nrow = 1, widths = c(2, 4))
+
+```
+
+\newpage
+
+_Roseburia intestinalis_ by inflammation status  
+
+```{r maaslin2_r_intest_inflammation, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= inflammation, y = tax_maas$s__Roseburia_intestinalis, color = inflammation)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Inflammation status") + ylab("Roseburia intestinalis") + scale_color_manual(values = col_inflammation_plot) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage
+
+_Roseburia intestinalis_ by patient diagnosis  
+
+```{r maaslin2_r_intest_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= diagnosis, y = tax_maas$s__Roseburia_intestinalis, color = diagnosis)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Patient diagnosis") + ylab("Roseburia intestinalis") + scale_color_manual(values = col_diagnosis) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage  
+
+## _Streptococcus sanguinis_ by patient diagnosis      
+
+
+```{r s_sang_density, echo = FALSE, warning = FALSE, message = FALSE, fig.height=4, fig.width=6, dpi = 300}
+
+s_sang = data.frame(row.names(dat_taxa_species_common), dat_taxa_species_common$s__Streptococcus_sanguinis)
+names(s_sang) = c("Samples", "rel_abun")
+s_sang$hem = stat_meta[match(s_sang$Samples, row.names(stat_meta)), "haemo_cat"]
+
+zero_s_sang = subset(s_sang, rel_abun == 0)
+zero_s_sang$hem = stat_meta[match(zero_s_sang$Samples, row.names(stat_meta)), "haemo_cat"]
+
+nonzero_s_sang = subset(s_sang, rel_abun != 0)
+nonzero_s_sang$hem = stat_meta[match(nonzero_s_sang$Samples, row.names(stat_meta)), "haemo_cat"]
+tmp = subset(nonzero_s_sang, hem == "Normal")
+median_value = median(tmp$rel_abun)
+
+zero_s_sang$hem = factor(zero_s_sang$hem, levels = c("Normal", "Anemia", "Not recorded"))
+#This actucally needs to be median of HC - rel_abun- to center the logged rel abun
+nonzero_s_sang$rel_abun = log10(nonzero_s_sang$rel_abun/median_value)
+
+table1 = data.frame(table(s_sang$hem))
+table2 = data.frame(table(zero_s_sang$hem))
+zero_s_sang_final = merge(table1, table2, by = "Var1")
+names(zero_s_sang_final) = c("hem", "total", "zeros")
+zero_s_sang_final$porportion = zero_s_sang_final$zeros / zero_s_sang_final$total *100
+zero_s_sang_final = subset(zero_s_sang_final, hem != "Not recorded")
+zero_s_sang_final$hem = factor(zero_s_sang_final$hem, levels = c("Normal", "Anemia"))
+
+zeroplots_s_sang = ggplot(zero_s_sang_final, aes(x = hem, y = porportion, fill = hem)) + geom_bar(position = position_dodge(0.1), stat = "identity") + theme_classic(base_size = 16)+ scale_fill_manual(values = col_rb) + ylab("Proportion of zeros") + xlab ("") + theme(legend.position = "NONE") + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+nonzero_s_sang$hem = factor(nonzero_s_sang$hem, levels = c("Normal", "Anemia", "Not recorded"))
+nonzero_s_sang_final = subset(nonzero_s_sang, hem != "Not recorded")
+density_s_sang = ggplot(nonzero_s_sang_final, aes(x = rel_abun, y= hem, fill = hem)) + geom_density_ridges(alpha = 0.6, scale = 15) + scale_fill_manual(values = col_rb) + xlim(-2, 2) + theme_classic(base_size = 14)+ labs(fill = "Anemia", title = "Streptococcus sanguinis") + ylab("Density") + xlab("") + theme(plot.title = element_text(face = "italic")) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + theme(legend.position = "NONE") 
+
+grid.arrange(zeroplots_s_sang, density_s_sang, ncol = 2, nrow = 1, widths = c(2, 4))
+
+```
+
+\newpage
+
+_Streptococcus sanguinis_ by inflammation status  
+
+```{r maaslin2_s_sang_inflammation, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= inflammation, y = tax_maas$s__Streptococcus_sanguinis, color = inflammation)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Inflammation status") + ylab("Streptococcus sanguinis") + scale_color_manual(values = col_inflammation_plot) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+\newpage
+
+_Streptococcus sanguinis_ by patient diagnosis  
+
+```{r maaslin2_s_sang_diagnosis, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+ggplot(tax_maas, aes(x= diagnosis, y = tax_maas$s__Streptococcus_sanguinis, color = diagnosis)) +geom_boxplot(lwd = 2, outlier.shape = NA) + theme_bw(base_size = 14) + xlab("Patient diagnosis") + ylab("Streptococcus sanguinis") + scale_color_manual(values = col_diagnosis) + geom_jitter(shape=16, position=position_jitter(0.2), size = 3) + theme(legend.position = "NONE")
+```
+
+
+\newpage
+
+
+``` {r raphlan_setup, include = FALSE}
+
+#Setup for reducing the number of taxa on the cladogram
+dim(dat_taxa) 
+dim(dat_taxa[ apply(dat_taxa, 1, function(x) sum( x > 0.001) > 0.1 * ncol(dat_taxa)), ]) 
+reduce_taxa = dat_taxa[ apply(dat_taxa, 1, function(x) sum( x > 0.001) > 0.10 * ncol(dat_taxa)), ]
+# subset to species only
+
+# which don't have "t__"
+tmp.ind = grep( "\\|t__", rownames(reduce_taxa), invert = T )
+reduce_taxa = reduce_taxa[tmp.ind,]
+list_taxa = row.names(reduce_taxa)
+list_taxa = gsub(".*\\|", "", row.names(reduce_taxa))
+
+maas_species$phyla = NULL
+maas_genus$phyla = NULL
+maas_family$phyla = NULL
+
+maas_sign_inflam = rbind(maas_species_inflam, maas_genus_inflam, maas_family_inflam, maas_order_inflam, maas_class_inflam, maas_phylum_inflam)
+maas_sign_some = subset(maas_sign_inflam, value == "Some inflammation")
+maas_sign_inflam = subset(maas_sign_inflam, value == "Inflammation")
+share = intersect(maas_sign_some$feature, maas_sign_inflam$feature)
+maas_sign_some_clade = maas_sign_some[-which(maas_sign_some$feature %in% share), ]
+
+maas_sign_ra = rbind(maas_species_dia, maas_genus_dia, maas_family_dia, maas_order_dia, maas_class_dia, maas_phylum_dia)
+maas_sign_as = subset(maas_sign_ra, value == "AS")
+maas_sign_ra = subset(maas_sign_ra, value == "RA")
+
+maas_sign_hem = rbind(maas_species_hem, maas_genus_hem, maas_family_hem, maas_order_hem, maas_class_hem, maas_phylum_hem)
+
+maas_sign = rbind(maas_sign_inflam, maas_sign_some, maas_sign_ra, maas_sign_as, maas_sign_hem)
+
+
+
+#Create the colors:
+df_col_dia = data.frame(col_diagnosis)
+names(df_col_dia) = c("color")
+df_col_dia$value = row.names(df_col_dia)
+
+df_col_inflam = data.frame(col_inflammation)
+names(df_col_inflam) = c("color")
+df_col_inflam$value = row.names(df_col_inflam)
+
+df_col_rb = data.frame(col_rb)
+names(df_col_rb) = c("color")
+df_col_rb$value = row.names(df_col_rb)
+
+colors_graph = rbind(df_col_dia, df_col_inflam, df_col_rb)
+colors_graph = subset(colors_graph, value != "Not recorded" & value != "NIJP" & value != "PsA") 
+
+
+maas_sign$value = ifelse(maas_sign$coef < 0 & maas_sign$value == "Inflammation", "Not inflamed", as.character(maas_sign$value))
+maas_sign$value = ifelse(maas_sign$coef < 0 & maas_sign$value == "Some inflammation", "Not inflamed", as.character(maas_sign$value))
+maas_sign$value = ifelse(maas_sign$coef < 0 & maas_sign$value == "RA", "HC", as.character(maas_sign$value))
+maas_sign$value = ifelse(maas_sign$coef < 0 & maas_sign$value == "AS", "HC", as.character(maas_sign$value))
+maas_sign$value = ifelse(maas_sign$coef < 0 & maas_sign$value == "Anemia", "Normal", as.character(maas_sign$value))
+
+maas_sign$color = colors_graph[match(maas_sign$value, colors_graph$value), "color"]
+
+ring = maas_sign[, c(1, 3, 10)]
+ring$label = "ring_color"
+ring$number = "1"
+
+ring = ring[,c(1, 4:5, 3, 2)]
+
+size <- maas_sign %>% 
+  dplyr::group_by(feature) %>% 
+  dplyr::arrange(coef) %>% 
+  dplyr::slice(1) %>% 
+  dplyr::ungroup()
+
+size = size[, c(1, 3:4, 9)]
+size$color = -log(size$qval)*sign(size$coef)
+size$label = "clade_marker_size"
+size$number = "0"
+size = data.frame(size[, c(1, 6:7, 5, 2)])
+size$color = as.character(size$color)
+
+share_ra = intersect(maas_sign_ra$feature, maas_sign_inflam$feature)
+maas_sign_ra_clade = maas_sign_ra[-which(maas_sign_ra$feature %in% share_ra), ]
+
+share_some_ra = intersect(maas_sign_ra$feature, maas_sign_some_clade$feature)
+maas_sign_some_clade = maas_sign_some_clade[-which(maas_sign_some_clade$feature %in% share_some_ra), ]
+
+share_as = intersect(maas_sign_as$feature, maas_sign_inflam$feature)
+share_as_ra = intersect(maas_sign_as$feature, maas_sign_ra_clade$feature)
+share_as = append(share_as, share_as_ra)
+maas_sign_as_clade = maas_sign_as[-which(maas_sign_as$feature %in% share_as), ]
+
+share_some_as = intersect(maas_sign_as$feature, maas_sign_some_clade$feature)
+maas_sign_some_clade = maas_sign_some_clade[-which(maas_sign_some_clade$feature %in% share_some_as), ]
+
+share_anemia = intersect(maas_sign_hem$feature, maas_sign_inflam$feature)
+share_anemia_ra = intersect(maas_sign_hem$feature, maas_sign_ra_clade$feature)
+share_anemia_as = intersect(maas_sign_hem$feature, maas_sign_as_clade$feature)
+share_anemia = append(share_anemia, share_anemia_ra)
+maas_sign_anemia_clade = maas_sign_hem[-which(maas_sign_hem$feature %in% share_anemia), ]
+
+share_anemia_some = intersect(maas_sign_hem$feature, maas_sign_some_clade$feature)
+
+maas_clade = rbind(maas_sign_inflam, maas_sign_some_clade, maas_sign_ra_clade, maas_sign_as_clade, maas_sign_anemia_clade)
+maas_clade$value = ifelse(maas_clade$coef < 0 & maas_clade$value == "Inflammation", "Not inflamed", as.character(maas_clade$value))
+maas_clade$value = ifelse(maas_clade$coef < 0 & maas_clade$value == "Some inflammation", "Not inflamed", as.character(maas_clade$value))
+maas_clade$value = ifelse(maas_clade$coef < 0 & maas_clade$value == "RA", "HC", as.character(maas_clade$value))
+maas_clade$value = ifelse(maas_clade$coef < 0 & maas_clade$value == "AS", "HC", as.character(maas_clade$value))
+maas_clade$value = ifelse(maas_clade$coef < 0 & maas_clade$value == "Anemia", "Normal", as.character(maas_clade$value))
+maas_clade$color = colors_graph[match(maas_clade$value, colors_graph$value), "color"]
+
+clade = maas_clade[, c(1, 3, 10)]
+clade$label = "clade_marker_color"
+clade$number = "1"
+
+clade = clade[,c(1, 4:5, 3, 2)]
+
+
+graphlan = rbind(ring, clade, size)
+
+
+#write.csv(graphlan, file = "graphlan_annot_file.csv")
+
+#Write the metadata table and the feature tables 
+str(stat_meta)
+stat_meta$batch = as.character(stat_meta$batch)
+stat_meta$crp_corrected = as.numeric(stat_meta$crp_corrected)
+
+bhm_reduce = data.frame(row.names(bhm_dat), bhm_dat$rf, bhm_dat$anti_ccp_status, bhm_dat$das28_crp, bhm_dat$das28_esr, bhm_dat$tjc_28, bhm_dat$sjc_28)
+names(bhm_reduce) = gsub("bhm_dat\\.", "", names(bhm_reduce))
+row.names(bhm_reduce) = bhm_reduce$row.names.
+bhm_reduce$row.names. = NULL
+
+oas_reduce = data.frame(row.names(oas_dat), oas_dat$hla, oas_dat$ibd, oas_dat$basdai, oas_dat$patient_spinal_pain_vas, oas_dat$asdas_crp)
+names(oas_reduce) = gsub("oas_dat\\.", "", names(oas_reduce))
+row.names(oas_reduce) = oas_reduce$row.names.
+oas_reduce$row.names. = NULL
+oas_reduce$ibd = as.character(oas_reduce$ibd)
+oas_reduce$ibd = mgsub(oas_reduce$ibd, c("no", "No", "NO", "Not", "Not relevant"), c("Negative", "Negative", "Negative", "Negative", "Negative"))
+oas_reduce$ibd[oas_reduce$ibd==""] = "Negative"
+oas_reduce$hla = as.character(oas_reduce$hla)
+
+
+meta = merge(stat_meta, bhm_reduce, by = "row.names", all = T)
+row.names(meta) = meta$Row.names
+meta$Row.names = NULL
+
+meta = merge(meta, oas_reduce, by = "row.names", all = T)
+row.names(meta) = meta$Row.names
+meta$Row.names = NULL
+
+id = read.csv("/Users/kelseythompson/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/key_adult_crosssesctional.csv", colClasses = c("character", "character"))
+id$real = paste("IAMC", id$RandomID, sep = "")
+
+meta$id = id[match(row.names(meta), id$SampleID), "real"]
+row.names(meta) = meta$id
+meta$id = NULL
+
+write.csv(meta, file = "cross_sectional_metadata.csv", quote = F)
+dat_dna_path_common = data.frame(t(dat_dna_path_common), check.names = F)
+dat_dna_ecs_common = data.frame(t(dat_dna_ecs_common), check.names = F)
+
+dat_taxa_species_common$id = id[match(row.names(dat_taxa_species_common), id$SampleID), "real"]
+row.names(dat_taxa_species_common) = dat_taxa_species_common$id
+dat_taxa_species_common$id = NULL
+
+dat_dna_path_common$id = id[match(row.names(dat_dna_path_common), id$SampleID), "real"]
+row.names(dat_dna_path_common) = dat_dna_path_common$id
+dat_dna_path_common$id = NULL
+
+dat_dna_ecs_common$id = id[match(row.names(dat_dna_ecs_common), id$SampleID), "real"]
+row.names(dat_dna_ecs_common) = dat_dna_ecs_common$id
+dat_dna_ecs_common$id = NULL
+
+write.csv(dat_taxa_species_common, file = "cross_sectional_taxonomy.csv")
+write.csv(dat_dna_path_common, file = "cross_sectional_pathways.csv")
+write.csv(dat_dna_ecs_common, file = "cross_sectional_ecs.csv")
+
+
+```
+
+

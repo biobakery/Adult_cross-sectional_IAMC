@@ -1,0 +1,706 @@
+---
+title: "IAMC- Manuscript1"
+author: "Kelsey N. Thompson, Ph.D."
+date: "Spring 2021"
+header-includes:
+- \usepackage{titling}
+- \pretitle{\begin{center}\LARGE\includegraphics[width=12cm]{HarvardChan_logo_center_subbrand_RGB_large.png}\\[\bigskipamount]}
+- \posttitle{\end{center}}
+output: 
+  pdf_document:
+    toc: true
+    keep_tex: true
+    dev: png
+---
+
+
+```{r Maaslin2_runs_all, include = FALSE}
+library(dplyr)
+library(Maaslin2)
+
+stat_meta$haemo_cat = as.character(stat_meta$haemoglobin)
+stat_meta$haemo_cat =  ifelse(is.na(stat_meta$haemo_cat) == FALSE, "Normal", as.character(stat_meta$haemo_cat))
+stat_meta$haemo_cat =  ifelse(stat_meta$gender ==  "m" & stat_meta$haemoglobin < 135, "Anemia", as.character(stat_meta$haemo_cat))
+stat_meta$haemo_cat =  ifelse(stat_meta$gender ==  "f" & stat_meta$haemoglobin < 120, "Anemia", as.character(stat_meta$haemo_cat))
+
+
+maas_meta = stat_meta[, -c(1:3)]
+str(maas_meta)
+maas_meta$batch = as.character(maas_meta$batch)
+maas_meta$drug = gsub("DMARD biologic|DMARD conventional synthetic", "other", maas_meta$drug)
+
+#Class
+tmp.ind = grep( "\\|o__", rownames(dat_taxa), invert = T )
+tmp = dat_taxa[tmp.ind,]
+tmp.ind = grep( "\\|c__", rownames(tmp))
+dat_class = tmp[tmp.ind,]
+row.names(dat_class) = gsub( ".*\\|", "", row.names(dat_class))
+
+dat_class = dat_class %>% group_by(row.names(dat_class)) %>% summarise_all(list(sum))
+colSums(dat_class[, -1])
+dat_class = data.frame(dat_class)
+row.names(dat_class) = dat_class$row.names.dat_class.
+dat_class$row.names.dat_class. = NULL
+dat_class = data.frame(t(dat_class))
+
+#Order
+tmp.ind = grep( "\\|f__", rownames(dat_taxa), invert = T )
+tmp = dat_taxa[tmp.ind,]
+tmp.ind = grep( "\\|o__", rownames(tmp))
+dat_order = tmp[tmp.ind,]
+row.names(dat_order) = gsub( ".*\\|", "", row.names(dat_order))
+
+dat_order = dat_order %>% group_by(row.names(dat_order)) %>% summarise_all(list(sum))
+colSums(dat_order[, -1])
+dat_order = data.frame(dat_order)
+row.names(dat_order) = dat_order$row.names.dat_order.
+dat_order$row.names.dat_order. = NULL
+dat_order = data.frame(t(dat_order))
+
+#Family
+tmp.ind = grep( "\\|g__", rownames(dat_taxa), invert = T )
+tmp = dat_taxa[tmp.ind,]
+tmp.ind = grep( "\\|f__", rownames(tmp))
+dat_family = tmp[tmp.ind,]
+row.names(dat_family) = gsub( ".*\\|", "", row.names(dat_family))
+
+dat_family = dat_family %>% group_by(row.names(dat_family)) %>% summarise_all(list(sum))
+colSums(dat_family[, -1])
+dat_family = data.frame(dat_family)
+row.names(dat_family) = dat_family$row.names.dat_family.
+dat_family$row.names.dat_family. = NULL
+dat_family = data.frame(t(dat_family))
+
+#Genus
+tmp.ind = grep( "\\|s__", rownames(dat_taxa), invert = T )
+tmp = dat_taxa[tmp.ind,]
+tmp.ind = grep( "\\|g__", rownames(tmp))
+dat_genus = tmp[tmp.ind,]
+row.names(dat_genus) = gsub( ".*\\|", "", row.names(dat_genus))
+
+dat_genus = dat_genus %>% group_by(row.names(dat_genus)) %>% summarise_all(list(sum))
+colSums(dat_genus[, -1])
+dat_genus = data.frame(dat_genus)
+row.names(dat_genus) = dat_genus$row.names.dat_genus.
+dat_genus$row.names.dat_genus. = NULL
+dat_genus = data.frame(t(dat_genus))
+
+library(Maaslin2)
+#Taxonomy Species level
+#Maaslin2(dat_taxa_species_common, maas_meta, "maaslin2_taxonomy_full", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+Maaslin2(dat_taxa_species_common, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_taxonomy_inflam", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_taxa_species_common, maas_meta[, -c(1:6, 12:14)], "maaslin2_taxonomy_diagnosis", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_taxa_species_common, maas_meta[, c(11:12)], "maaslin2_taxonomy_inflam_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_taxa_species_common, maas_meta[, c(10:11)], "maaslin2_taxonomy_diagnosis_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_taxa_species_common, maas_meta[, c(2,11)], "maaslin2_taxonomy_hemo_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_taxa_species_common, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_taxonomy_hemo", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_taxa_species_common, maas_meta[, c(11, 14)], "maaslin2_taxonomy_hemo_cat_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_taxa_species_common, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_taxonomy_hemo_cat", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+#Taxonomy Genus level
+Maaslin2(dat_genus, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_taxonomy_inflam_genus", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_genus, maas_meta[, -c(1:6, 12:14)], "maaslin2_taxonomy_diagnosis_genus", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_genus, maas_meta[, c(11:12)], "maaslin2_taxonomy_inflam_wo_tech_genus", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_genus, maas_meta[, c(10:11)], "maaslin2_taxonomy_diagnosis_wo_tech_genus", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_genus, maas_meta[, c(2,11)], "maaslin2_taxonomy_hemo_wo_tech_genus", 
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_genus, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_taxonomy_hemo_genus", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_genus, maas_meta[, c(11, 14)], "maaslin2_taxonomy_hemo_cat_wo_tech_genus", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_genus, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_taxonomy_hemo_cat_genus", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+
+#Taxonomy family level
+Maaslin2(dat_family, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_taxonomy_inflam_family", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_family, maas_meta[, -c(1:6, 12:14)], "maaslin2_taxonomy_diagnosis_family", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_family, maas_meta[, c(11:12)], "maaslin2_taxonomy_inflam_wo_tech_family", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_family, maas_meta[, c(10:11)], "maaslin2_taxonomy_diagnosis_wo_tech_family", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_family, maas_meta[, c(2,11)], "maaslin2_taxonomy_hemo_wo_tech_family", 
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_family, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_taxonomy_hemo_family", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_family, maas_meta[, c(11, 14)], "maaslin2_taxonomy_hemo_cat_wo_tech_family", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_family, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_taxonomy_hemo_cat_family", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+#Taxonomy order level
+Maaslin2(dat_order, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_taxonomy_inflam_order", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_order, maas_meta[, -c(1:6, 12:14)], "maaslin2_taxonomy_diagnosis_order", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_order, maas_meta[, c(11:12)], "maaslin2_taxonomy_inflam_wo_tech_order", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_order, maas_meta[, c(10:11)], "maaslin2_taxonomy_diagnosis_wo_tech_order", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_order, maas_meta[, c(2,11)], "maaslin2_taxonomy_hemo_wo_tech_order", 
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_order, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_taxonomy_hemo_order", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_order, maas_meta[, c(11, 14)], "maaslin2_taxonomy_hemo_cat_wo_tech_order", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_order, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_taxonomy_hemo_cat_order", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+#Taxonomy class level
+Maaslin2(dat_class, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_taxonomy_inflam_class", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_class, maas_meta[, -c(1:6, 12:14)], "maaslin2_taxonomy_diagnosis_class", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_class, maas_meta[, c(11:12)], "maaslin2_taxonomy_inflam_wo_tech_class", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_class, maas_meta[, c(10:11)], "maaslin2_taxonomy_diagnosis_wo_tech_class", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_class, maas_meta[, c(2,11)], "maaslin2_taxonomy_hemo_wo_tech_class", 
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_class, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_taxonomy_hemo_class", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_class, maas_meta[, c(11, 14)], "maaslin2_taxonomy_hemo_cat_wo_tech_class", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_class, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_taxonomy_hemo_cat_class", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+#Taxonomy phylum level
+Maaslin2(dat_phylum, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_taxonomy_inflam_phylum", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_phylum, maas_meta[, -c(1:6, 12:14)], "maaslin2_taxonomy_diagnosis_phylum", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_phylum, maas_meta[, c(11:12)], "maaslin2_taxonomy_inflam_wo_tech_phylum", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_phylum, maas_meta[, c(10:11)], "maaslin2_taxonomy_diagnosis_wo_tech_phylum", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_phylum, maas_meta[, c(2,11)], "maaslin2_taxonomy_hemo_wo_tech_phylum", 
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_phylum, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_taxonomy_hemo_phylum", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_phylum, maas_meta[, c(11, 14)], "maaslin2_taxonomy_hemo_cat_wo_tech_phylum", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_phylum, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_taxonomy_hemo_cat_phylum", 
+         normalization = "NONE",
+         min_prevalence = 0.1,
+         min_abundance = 0.0001,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+
+
+
+##Pathways
+#dat_dna_path_common = data.frame(t(dat_dna_path_common))
+Maaslin2(dat_dna_path_common, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_path_inflam", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_dna_path_common, maas_meta[, -c(1:6, 12:14)], "maaslin2_path_diagnosis", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_dna_path_common, maas_meta[, c(11:12)], "maaslin2_path_inflam_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_dna_path_common, maas_meta[, c(10:11)], "maaslin2_path_diagnosis_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_dna_path_common, maas_meta[, c(2,11)], "maaslin2_path_hemo_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_dna_path_common, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_path_hemo", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_dna_path_common, maas_meta[, c(11, 14)], "maaslin2_path_hemo_cat_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_dna_path_common, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_path_hemo_cat", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+
+#ECs
+#dat_dna_ecs_common = data.frame(t(dat_dna_ecs_common))
+Maaslin2(dat_dna_ecs_common, maas_meta[, -c(1:6, 10, 13:14)], "maaslin2_ecs_inflam", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('inflammation,Not inflamed')))
+
+Maaslin2(dat_dna_ecs_common, maas_meta[, -c(1:6, 12:14)], "maaslin2_ecs_diagnosis", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none'),('diagnosis,HC')))
+
+Maaslin2(dat_dna_ecs_common, maas_meta[, c(11:12)], "maaslin2_ecs_inflam_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('inflammation,Not inflamed')))
+
+Maaslin2(dat_dna_ecs_common, maas_meta[, c(10:11)], "maaslin2_ecs_diagnosis_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('diagnosis,HC')))
+
+Maaslin2(dat_dna_ecs_common, maas_meta[, c(2,11)], "maaslin2_ecs_hemo_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_dna_ecs_common, maas_meta[, -c(1, 3:6, 10, 12:14)], "maaslin2_ecs_hemo", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+Maaslin2(dat_dna_ecs_common, maas_meta[, c(11, 14)], "maaslin2_ecs_hemo_cat_wo_tech", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE)
+
+Maaslin2(dat_dna_ecs_common, maas_meta[, -c(1:6, 10, 12:13)], "maaslin2_ecs_hemo_cat", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         plot_heatmap = TRUE,
+         reference = c(('Cohort,BHM'),('batch,1'),('drug,none')))
+
+
+
+
+```
+
+```{r Maaslin2_runs_oas, include = FALSE}
+#maas_meta_oas = oas_dat[, (-1)]
+#maas_meta_oas$diagnosis = gsub("HC", "a_HC", maas_meta_oas$diagnosis)
+#maas_meta_oas = subset(maas_meta_oas, diagnosis != "Unknown")
+
+#maas_meta_oas$ibd = recode(maas_meta_oas$ibd, "Negative" = "Negative", "no" = "Negative", "No" = "Negative", "NO" = "Negative", "Not relevant" = "Negative", "Positive" = "Positive", .default = "Negative")
+
+#maas_meta_oas$psoriasis = recode(maas_meta_oas$psoriasis, "Negative" = "Negative", "no" = "Negative", "No" = "Negative", "NO" = "Negative", "Not relevant" = "Negative", "Positive" = "Positive", "yes" = "Positive", "Yes" = "Positive", .default = "Negative")
+
+#maas_meta_oas$drug = NULL
+#maas_meta_oas$batch = droplevels(maas_meta_oas$batch)
+
+##Taxonomy
+#Maaslin2(dat_taxa_oas, maas_meta_oas[, -c(1,4)], "maaslin2_taxonomy_oas_diagnosis", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_taxa_oas, maas_meta_oas[, -5], "maaslin2_taxonomy_oas_disease", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_oas, maas_meta_oas[, -c(1, 4)], "maaslin2_pathways_oas_diagnosis", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_oas, maas_meta_oas[, -5], "maaslin2_pathways_oas_disease", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_oas, maas_meta_oas[, -c(1, 4)], "maaslin2_ecs_oas_diagnosis", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_oas, maas_meta_oas[, -5], "maaslin2_ecs_oas_disease", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+```
+
+```{r Maaslin2_runs_bhm, include = FALSE}
+#maas_meta_bhm = bhm_dat[, c(1, 5:43)]
+#maas_meta_bhm = maas_meta_bhm[, -(grep("_range", colnames(maas_meta_bhm)))]
+
+#maas_meta_bhm_anti_status = maas_meta_bhm[, grep("_status", colnames(maas_meta_bhm))]
+#maas_meta_bhm_anti_status = maas_meta_bhm_anti_status[, -c(1:2)]
+#maas_meta_bhm_anti_status[, c(1:8)] = sapply(maas_meta_bhm_anti_status[, c(1:8)], as.character)
+  
+#maas_meta_bhm_anti_value = maas_meta_bhm[, grep("_value", colnames(maas_meta_bhm))]
+#maas_meta_bhm_anti_value = maas_meta_bhm_anti_value[, -c(1:2)]
+
+#maas_meta_bhm_use = maas_meta_bhm[, c(1:4, 20:32)]
+#maas_meta_bhm_use$anti_ccp_value = NULL
+#maas_meta_bhm_use = maas_meta_bhm_use[, c(16, 1, 15, 14, 12, 13, 2:11)]
+
+#maas_meta_bhm_anti_status = cbind(maas_meta_bhm_anti_status, maas_meta_bhm_use[, c(1:6)])
+#maas_meta_bhm_anti_status = maas_meta_bhm_anti_status[complete.cases(maas_meta_bhm_anti_status$cit_igg_status), ]
+#maas_meta_bhm_anti_status$Cohort = NULL
+#maas_meta_bhm_anti_value = cbind(maas_meta_bhm_anti_value, maas_meta_bhm_use[, c(1:6)])
+#maas_meta_bhm_anti_value$Cohort = NULL
+
+#Running all variables as univariate
+#dir.create(paste0(getwd(), '/maaslin2_bhm_taxonomy_univar'))
+#for (i in 1:length(maas_meta_bhm))
+#{
+#  Maaslin2(dat_taxa_bhm,  maas_meta_bhm[i], 
+#           output = paste0("maaslin2_bhm_taxonomy_univar/", names(maas_meta_bhm[i])), 
+#           normalization = "NONE", 
+#           min_prevalence = 0)
+#}
+
+##Taxonomy
+#Maaslin2(dat_taxa_bhm, maas_meta_bhm_use, "maaslin2_taxonomy_bhm_disease", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_taxa_bhm, maas_meta_bhm_anti_status, "maaslin2_taxonomy_bhm_anti_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_taxa_bhm, maas_meta_bhm_anti_value, "maaslin2_taxonomy_bhm_anti_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_taxa_bhm, maas_meta_bhm_anti_value[, c(5, 8, 11:12)], "maaslin2_taxa_bhm_orn_ac_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_taxa_bhm, maas_meta_bhm_anti_status[, c(6, 8, 11:12)], "maaslin2_taxa_bhm_orn_ac_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+
+#Maaslin2(dat_taxa_bhm, maas_meta_bhm_anti_value[, c(7, 8, 11:12)], "maaslin2_taxa_bhm_lys_ac_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_taxa_bhm, maas_meta_bhm_anti_status[, c(8, 9, 12:13)], "maaslin2_taxa_bhm_lys_ac_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+
+#dat_path_bhm_use = data.frame(t(dat_path_bhm_use))
+#Maaslin2(dat_path_bhm_use, maas_meta_bhm_use, "maaslin2_pathways_bhm_disease", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#        plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_bhm_use, maas_meta_bhm_anti_status, "maaslin2_pathways_bhm_anti_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_bhm_use, maas_meta_bhm_anti_value, "maaslin2_pathways_bhm_anti_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_bhm_use, maas_meta_bhm_anti_value[, c(5, 8, 11:12)], "maaslin2_path_bhm_orn_ac_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_bhm_use, maas_meta_bhm_anti_status[, c(6, 8, 11:12)], "maaslin2_path_bhm_orn_ac_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_bhm_use, maas_meta_bhm_anti_value[, c(7, 8, 11:12)], "maaslin2_path_bhm_lys_ac_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_path_bhm_use, maas_meta_bhm_anti_status[, c(8, 9, 12:13)], "maaslin2_path_bhm_lys_ac_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#dat_ecs_bhm_use = data.frame(t(dat_ecs_bhm_use))
+#Maaslin2(dat_ecs_bhm_use, maas_meta_bhm_use, "maaslin2_ecs_bhm_disease", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_bhm_use, maas_meta_bhm_anti_status, "maaslin2_ecs_bhm_anti_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_bhm_use, maas_meta_bhm_anti_value, "maaslin2_ecs_bhm_anti_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_bhm_use, maas_meta_bhm_anti_value[, c(5, 8, 11:12)], "maaslin2_ecs_bhm_orn_ac_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_bhm_use, maas_meta_bhm_anti_status[, c(6, 8, 11:12)], "maaslin2_ecs_bhm_orn_ac_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_bhm_use, maas_meta_bhm_anti_value[, c(7, 8, 11:12)], "maaslin2_ecs_bhm_lys_ac_value", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+#Maaslin2(dat_ecs_bhm_use, maas_meta_bhm_anti_status[, c(8, 9, 12:13)], "maaslin2_ecs_bhm_lys_ac_status", 
+#         normalization = "NONE",
+#         min_prevalence = 0,
+#         plot_heatmap = TRUE)
+
+
+
+
+```

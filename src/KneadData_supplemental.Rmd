@@ -1,0 +1,426 @@
+---
+title: "IAMC- Manuscript1"
+author: "Kelsey N. Thompson, Ph.D."
+date: "March 19, 2019"
+header-includes:
+- \usepackage{titling}
+- \pretitle{\begin{center}\LARGE\includegraphics[width=12cm]{HarvardChan_logo_center_subbrand_RGB_large.png}\\[\bigskipamount]}
+- \posttitle{\end{center}}
+output: 
+  pdf_document:
+    toc: true
+    keep_tex: true
+    dev: png
+---
+
+\newpage
+
+```{r setup_functions, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dpi=600)
+#Random libraries I always like to call
+library(ggplot2)
+library(vegan)
+library(ggthemes)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(gplots)
+library(gtools)
+library(plyr)
+library(dplyr)
+library(mgsub)
+library(readr)
+#These are the libraries for the randomForest code
+library(randomForest)
+library(caret)
+library(ROCR)
+library(viridis)
+
+#These are the standard functions I use to parse the features
+
+###### functions #######
+keep_species <-function(dat_taxa){
+  temp = dat_taxa[grepl("s__",rownames(dat_taxa)) & (!grepl("t__",rownames(dat_taxa))) & (!grepl("unclassified$",rownames(dat_taxa))),]
+  rownames(temp) = gsub(".*g__.*\\|","",rownames(temp))
+  return(temp)
+}
+
+is_common <- function(otu_df,cutoff=0.1){
+  num_row = dim(otu_df)[1]
+  num_col = dim(otu_df)[2]
+  otu_barcode = otu_df > 0.0001
+  common_index = apply(otu_barcode,1,mean) > cutoff
+  return(common_index)
+}
+
+top_abun <- function(df,num=10){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,mean),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+top_abun_median <- function(df,num=25){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,median),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+
+keep_pathways <-function(dat_path){
+  temp = dat_path[!grepl("\\|",rownames(dat_path)),]
+  # rownames(temp) = gsub(":.*","",rownames(temp))
+  return(temp)
+}
+
+select_pathways <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names.select = pathway.names[index]
+  pathway.names.select = unique(gsub("\\|.*","",pathway.names.select))
+  dat_path = dat_path[pathway.names.select,]
+  # rownames(dat_path) = gsub(":.*","",rownames(dat_path))
+  return(dat_path)
+}
+
+median_matrix <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names = pathway.names[index]
+  dat_path = dat_path[pathway.names,]
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  v_median_all = apply(dat_path,1,median)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  pathway.names.id.unique = unique(pathway.names.id)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  #out = out[,apply(out,2,median)>0]
+  out = out[,names(sort(apply(out,2,sum),decreasing = TRUE)[1:50])]
+  return(out)
+}
+
+same_median_matrix <- function(dat_median,dat_path){
+  taxa.names = rownames(dat_median)
+  pathway.names.id.unique = colnames(dat_median)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  v_median_all = apply(dat_path,1,median)
+  
+  pathway.names = rownames(dat_path)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  return(out)
+}
+
+#Set colors to be consistent across comparisons - ignore unless you want them. 
+col_drug = c("DMARD conventional synthetic" = "#FFD700", "DMARD biologic" = "#4B0082", "DMARD targeted synthetic" = "#8A2BE2", "Steroid" = "#FF8C00",  "NSAID" = "#F08080", "other" = "#FF4500", "Not recorded" = "#708090", "PPI" = "#87CEFA", "none" = "#90EE90")
+col_diagnosis = c("HC" = "#000080", "RA" = 	"#800080", "AS" = "#DA70D6", "PsA" = "#008000", "NIJP" = "#66CDAA")
+col_inflammation = c("Inflammation" = "#B22222", "Some inflammation" = "#FF8C00", "Not inflamed" = "#4682B4", "Not recorded" = "#808080")
+col_rb = c("Normal" = "#5F9EA0", "Anemia" = "#FF6347", "Not recorded" = "#696969")
+
+```
+
+\newpage
+```{r setup_tax_meta, include=FALSE}
+
+meta_bhm_ncl = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATABHMNCL_DATA_2021-02-17_1322.csv", stringsAsFactors = FALSE)
+#Pull out each sample once
+bhm_info = subset(meta_bhm_ncl, redcap_repeat_instrument == "")
+bhm_info = bhm_info[,colSums(is.na(bhm_info))<nrow(bhm_info)]
+#Pull out just the metadata with medication
+bhm_med = subset(meta_bhm_ncl, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+bhm_med = bhm_med[,colSums(is.na(bhm_med))<nrow(bhm_med)]
+#Find out which columns are shared between the two datasets
+repeat_measure = intersect(colnames(bhm_info), colnames(bhm_med))
+repeat_measure = repeat_measure[-c(1)]
+bhm_med = bhm_med[, -which(names(bhm_med) %in% repeat_measure)]
+bhm = merge(bhm_info, bhm_med, by = "iamc_id", all = T)
+bhm$Sample = paste(bhm$iamc_id, bhm$redcap_repeat_instance, sep = "v")
+bhm$Sample = gsub("v1", "", bhm$Sample)
+bhm$Sample = gsub("vNA", "", bhm$Sample)
+row.names(bhm) = bhm$Sample
+#Work on teh daignosis provided- Karim check these: said they were correct
+bhm$diagnosis_at_time_of_asses[is.na(bhm$diagnosis_at_time_of_asses)] = "Unknown"
+bhm$diagnosis_at_time_of_asses[(bhm$diagnosis_at_time_of_asses== "")] = "Unknown"
+bhm$diagnosis_at_time_of_asses = mgsub(bhm$diagnosis_at_time_of_asses, c("  $", " $", "^ "), c("", "", ""))
+bhm$diagnosis = recode(bhm$diagnosis_at_time_of_asses, "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "Ankylosing Spondylitis", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Drug Induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Fibromyalgia" = "Fibromyalgia", "Gout" = "Gout", "Healthy Control" = "Healthy Control", "Healthy control" = "Healthy Control", "Healthy control.  Blood relative (Daughter) of SWEAC 0213 (BHM00024)" = "Healthy Control", "Healthy control.  Partner of SWEAC 00321 (BHM00205)" = "Healthy Control", "Lupus/Other CTD-Associated" = "Lupus/Other CTD-Associated", "Non-Inflammatory" = "Non-Inflammatory", "Non inflammatory" = "Non-Inflammatory", "PsA" = "PsA", "PSA" = "PsA", "Pseudogout" = "Pseudogout", "Pseudo Gout" = "Pseudogout", "Psoriatic Arthritis" = "PsA", "Ra (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987)" = "RA (1987)", "RA (2010)" = "RA (2010)", "Reactive Arthritis" = "Reactive Arthritis", "Rheumatoid Arthritis" = "RA", "RS3PE" = "RS3PE", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "Undifferentiated Spondylo-Arthropathy", "Unknown" = "Unknown", "Osteoarthritis" = "Osteoarthritis", "Other Inflammatory Arthritis" = "Other Inflammatory Arthritis", "Inflammatory Arthritis related to Hereditary Haemochromatosis" = "Other Inflammatory Arthritis", "Palindromic Rheumatism" = "Other Inflammatory Arthritis", "Other Inflammatory" = "Other Inflammatory Arthritis", "Undifferentiated Inflammatory Arthritis" = "Clinically Suspect Arthralgia", "Enteropathic Arthritis" = "Enteropathic Arthritis", .default = "Unknown")
+
+bhm$arthritis_type = recode(bhm$diagnosis, "RA (1987 & 2010)" = "RA", "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "AS", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug Induced Inflammatory Arthritis" = "other", "Fibromyalgia" = "Non-Inflammatory Joint Pain", "Gout" = "Crystal Arthritis", "Healthy Control" = "Healthy Control", "Lupus/Other CTD-Associated" = "other", "Non-Inflammatory" = "Non-Inflammatory Joint Pain", "PsA" = "PsA", "Pseudogout" = "Crystal Arthritis", "RA (1987 & 2010)" = "RA", "RA (1987)" = "RA", "RA (2010)" = "RA", "Reactive Arthritis" = "other", "RA" = "RA", "RS3PE" = "other", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "other", "Unknown" = "Unknown", "Osteoarthritis" = "Non-Inflammatory Joint Pain", "Other Inflammatory Arthritis" = "other", "Enteropathic Arthritis" = "other", .default = "Unknown")
+
+
+meta_oas = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATAOAS_DATA_2021-02-17_1321.csv", head = T, sep = ",")
+oas_info = subset(meta_oas, redcap_repeat_instrument == "")
+oas_info = oas_info[,colSums(is.na(oas_info))<nrow(oas_info)]
+oas_med = subset(meta_oas, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+oas_med = oas_med[,colSums(is.na(oas_med))<nrow(oas_med)]
+repeat_measure = intersect(colnames(oas_info), colnames(oas_med))
+repeat_measure = repeat_measure[-c(1)]
+oas_med = oas_med[, -which(names(oas_med) %in% repeat_measure)]
+oas = merge(oas_info, oas_med, by = "iamc_id", all = TRUE)
+oas$Sample = paste(oas$iamc_id, oas$redcap_repeat_instance, sep = "v")
+oas$Sample = gsub("v1", "", oas$Sample)
+oas$Sample = gsub("vNA", "", oas$Sample)
+row.names(oas) = oas$Sample
+oas$diagnosis = oas$patient_id
+oas$diagnosis = gsub("\\d", "", oas$diagnosis)
+oas$diagnosis = gsub("HCB", "HC", oas$diagnosis)
+
+
+#Metadata exclude
+list_oas = c("Sample", "crp", "disease_duration_at_time_o", "diagnosis", "smoking_current_ever_never")
+oas_subset = oas[ , which(colnames(oas) %in% list_oas)]
+names(oas_subset) = c("smoking_current_ever_never", "disease_duration", "crp", "Sample", "diagnosis")
+
+list_bhm = c("Sample", "crp", "disease_duration_at_time", "arthritis_type", "smoking_current_ever_never")
+bhm_subset = bhm[ , which(colnames(bhm) %in% list_bhm)]
+names(bhm_subset) = c("smoking_current_ever_never", "disease_duration", "crp", "Sample", "diagnosis")
+
+meta_dat = rbind(bhm_subset, oas_subset)
+#Reset the daignosis to be prettier (again)
+meta_dat$diagnosis = recode(meta_dat$diagnosis, "AS" = "AS", "Clinically Suspect Arthralgia" = "CSA", "Crystal Arthritis" = "Crystal Arthritis", "HC" = "HC", "Healthy Control" = "HC", "Non-Inflammatory Joint Pain" = "NIJP", "NR" = "NR", "other" = "other", "PsA" = "PsA", "RA" = "RA", "Unclassified Inflammatory Arthritis" = "Unclass", "Unknown" = "Unknown", .default = "NA")
+
+#Get the quartiles for crp - define "inflammation"
+summary(meta_dat$crp)
+#split the data into the quartiles
+quantile(meta_dat$crp, probs = c(0.33, 0.66), na.rm = T)
+meta_dat$inflammation = cut(meta_dat$crp, c(0,4,10,245), labels = c("Not inflamed", "Some inflammation", "Inflammation"))
+meta_dat$inflammation = ifelse(is.na(as.character(meta_dat$inflammation)),"Not recorded", as.character(meta_dat$inflammation))
+#redefine HC's are "Not inflamed - since we have no clinical metadata on them
+meta_dat$inflammation = ifelse(meta_dat$inflammation == "Not recorded" & meta_dat$diagnosis == "HC", "Not inflamed", as.character(meta_dat$inflammation))
+#We no longer need the crp variable it is too skewed to work with
+meta_dat$crp = NULL
+
+#Smoking is a ever, never, current variable - lets set it as a character
+meta_dat$smoking_current_ever_never = as.character(meta_dat$smoking_current_ever_never)
+
+#Since HC's controls are disease free we can set their disease duration as 0 days. 
+meta_dat$disease_duration = ifelse(is.na(meta_dat$disease_duration) & meta_dat$diagnosis == "HC", "0", as.character(meta_dat$disease_duration))
+meta_dat$disease_duration = as.numeric(meta_dat$disease_duration)
+str(meta_dat)
+
+# taxonomic profiles relative abundance
+dat_taxa = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Input_data/current_merged_1_11_metaphlan_table.tsv",header=TRUE,row.names=1,sep="\t") / 100
+# DNA pathway relative abundance
+dat_dna_path = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Input_data/current_merged_1_11_pathway_relab.tsv",header=TRUE,row.names=1,sep="\t")
+
+### unify ID ###
+#At this point this data set does not have the addition of Sample_DNASample
+#colnames(dat_taxa) = gsub("Sample_DNASample","",colnames(dat_taxa))
+colnames(dat_taxa) = gsub("_taxonomic_profile","",colnames(dat_taxa))
+dat_taxa$current_merged = NULL
+colnames(dat_dna_path) = gsub("_Abundance","",colnames(dat_dna_path))
+
+
+#Exclude samples with little to no reads
+sample_exclude = c("BHM00026", "BHM00034", "BHM00041", "BHM00109")
+dim(dat_taxa)
+dat_taxa = dat_taxa[,-which(colnames(dat_taxa) %in% sample_exclude)]
+dim(dat_taxa)
+
+tmp.ind = grep( "\\|c__", rownames(dat_taxa), invert = T )
+tmp = dat_taxa[tmp.ind,]
+tmp.ind = grep( "\\|p__", rownames(tmp))
+dat_phylum = tmp[tmp.ind,]
+row.names(dat_phylum) = gsub("k__Bacteria\\|", "", row.names(dat_phylum))
+
+dat_phylum = dat_phylum %>% group_by(row.names(dat_phylum)) %>% summarise_all(list(sum))
+colSums(dat_phylum[, -1])
+dat_phylum = data.frame(dat_phylum)
+row.names(dat_phylum) = dat_phylum$row.names.dat_phylum.
+dat_phylum$row.names.dat_phylum. = NULL
+dat_phylum = data.frame(t(dat_phylum))
+#Check to make sure all samples included have relative abundance
+check = colSums(dat_taxa) > 0
+check = subset(check, check == FALSE)
+check
+
+#Make sure the samples match
+dat_meta = meta_dat[rownames(meta_dat) %in% colnames(dat_taxa),]
+dat_meta = subset(dat_meta, diagnosis != "Unknown" & diagnosis != "NR" & diagnosis != "Crystal Arthritis" & diagnosis != "Unclass" & diagnosis != "other" & diagnosis != "CSA")
+dat_taxa = dat_taxa[,colnames(dat_taxa) %in% rownames(dat_meta)]
+dat_dna_path = dat_dna_path[,which(colnames(dat_dna_path) %in% colnames(dat_taxa))]
+
+#Make sure the orders match
+dat_meta = dat_meta[match(row.names(dat_meta), names(dat_taxa)), ]
+
+
+### select taxa ###
+# keep species (without unclassified)
+dat_taxa_species = keep_species(dat_taxa)
+# select common species (>0.0001 in more than 10% samples)
+dat_taxa_species_common = dat_taxa_species[is_common(dat_taxa_species),]
+
+### select DNA pathway ###
+# keep unstratified dna pathways
+dat_dna_path_unstratified = keep_pathways(dat_dna_path)
+dat_dna_path_common = dat_dna_path_unstratified[is_common(dat_dna_path_unstratified), ]
+
+#Check and make sure everything matches
+identical(row.names(dat_meta), names(dat_taxa_species_common))
+identical(row.names(dat_meta), names(dat_dna_path_common))
+```
+
+
+```{r read_in_counts, include=FALSE}
+b1 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch001_read_count_table.tsv", sep = "\t", row.names = 1)
+b1$raw = b1$raw.pair1 + b1$raw.pair2
+b1$trimmed = b1$trimmed.orphan1 + b1$trimmed.orphan2 + b1$trimmed.pair1 + b1$trimmed.pair2
+b1$human = b1$decontaminated.Homo_sapiens.pair2 + b1$decontaminated.Homo_sapiens.pair2 + b1$decontaminated.Homo_sapiens.orphan1 + b1$decontaminated.Homo_sapiens.orphan2
+b1$rRNA = b1$decontaminated.SILVA_128_LSUParc_SSUParc_ribosomal_RNA.pair1 + b1$decontaminated.SILVA_128_LSUParc_SSUParc_ribosomal_RNA.pair2 + b1$decontaminated.SILVA_128_LSUParc_SSUParc_ribosomal_RNA.orphan1 + b1$decontaminated.SILVA_128_LSUParc_SSUParc_ribosomal_RNA.orphan2
+b1$final = b1$final.orphan1 + b1$final.orphan2 + b1$final.pair1 + b1$final.pair2
+b1_f = b1[, c(19:23)]
+b1_f$rRNA = NULL
+
+#2 does not remove rRNA
+b2 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch002_kneadata_read_count_table.tsv", sep = "\t", row.names = 1)
+b2$raw = b2$raw.pair1 + b2$raw.pair2
+b2$trimmed = b2$trimmed.orphan1 + b2$trimmed.orphan2 + b2$trimmed.pair1 + b2$trimmed.pair2
+b2$human = b2$decontaminated.Homo_sapiens.pair2 + b2$decontaminated.Homo_sapiens.pair2 + b2$decontaminated.Homo_sapiens.orphan1 + b2$decontaminated.Homo_sapiens.orphan2
+b2$final = b2$final.orphan1 + b2$final.orphan2 + b2$final.pair1 + b2$final.pair2
+b2_f = b2[, c(15:18)]
+
+b3 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch003_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b3$raw = b3$raw.pair1 + b3$raw.pair2
+b3$trimmed = b3$trimmed.orphan1 + b3$trimmed.orphan2 + b3$trimmed.pair1 + b3$trimmed.pair2
+b3$human = b3$decontaminated.Homo_sapiens.pair2 + b3$decontaminated.Homo_sapiens.pair2 + b3$decontaminated.Homo_sapiens.orphan1 + b3$decontaminated.Homo_sapiens.orphan2
+b3$final = b3$final.orphan1 + b3$final.orphan2 + b3$final.pair1 + b3$final.pair2
+b3_f = b3[, c(19:22)]
+
+b5 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch005_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b5$raw = b5$raw.pair1 + b5$raw.pair2
+b5$trimmed = b5$trimmed.orphan1 + b5$trimmed.orphan2 + b5$trimmed.pair1 + b5$trimmed.pair2
+b5$human = b5$decontaminated.Homo_sapiens.pair2 + b5$decontaminated.Homo_sapiens.pair2 + b5$decontaminated.Homo_sapiens.orphan1 + b5$decontaminated.Homo_sapiens.orphan2
+b5$final = b5$final.orphan1 + b5$final.orphan2 + b5$final.pair1 + b5$final.pair2
+b5_f = b5[, c(19:22)]
+
+b6 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch006_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b6$raw = b6$raw.pair1 + b6$raw.pair2
+b6$trimmed = b6$trimmed.orphan1 + b6$trimmed.orphan2 + b6$trimmed.pair1 + b6$trimmed.pair2
+b6$human = b6$decontaminated.Homo_sapiens.pair2 + b6$decontaminated.Homo_sapiens.pair2 + b6$decontaminated.Homo_sapiens.orphan1 + b6$decontaminated.Homo_sapiens.orphan2
+b6$final = b6$final.orphan1 + b6$final.orphan2 + b6$final.pair1 + b6$final.pair2
+b6_f = b6[, c(19:22)]
+
+b7 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch007_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b7$raw = b7$raw.pair1 + b7$raw.pair2
+b7$trimmed = b7$trimmed.orphan1 + b7$trimmed.orphan2 + b7$trimmed.pair1 + b7$trimmed.pair2
+b7$human = b7$decontaminated.Homo_sapiens.pair2 + b7$decontaminated.Homo_sapiens.pair2 + b7$decontaminated.Homo_sapiens.orphan1 + b7$decontaminated.Homo_sapiens.orphan2
+b7$final = b7$final.orphan1 + b7$final.orphan2 + b7$final.pair1 + b7$final.pair2
+b7_f = b7[, c(19:22)]
+
+#no rRNA
+b8 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch008_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b8$raw = b8$raw.pair1 + b8$raw.pair2
+b8$trimmed = b8$trimmed.orphan1 + b8$trimmed.orphan2 + b8$trimmed.pair1 + b8$trimmed.pair2
+b8$human = b8$decontaminated.Homo_sapiens.pair2 + b8$decontaminated.Homo_sapiens.pair2 + b8$decontaminated.Homo_sapiens.orphan1 + b8$decontaminated.Homo_sapiens.orphan2
+b8$final = b8$final.orphan1 + b8$final.orphan2 + b8$final.pair1 + b8$final.pair2
+b8_f = b8[, c(15:18)]
+
+b9 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch009_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b9$raw = b9$raw.pair1 + b9$raw.pair2
+b9$trimmed = b9$trimmed.orphan1 + b9$trimmed.orphan2 + b9$trimmed.pair1 + b9$trimmed.pair2
+b9$human = b9$decontaminated.Homo_sapiens.pair2 + b9$decontaminated.Homo_sapiens.pair2 + b9$decontaminated.Homo_sapiens.orphan1 + b9$decontaminated.Homo_sapiens.orphan2
+b9$final = b9$final.orphan1 + b9$final.orphan2 + b9$final.pair1 + b9$final.pair2
+b9_f = b9[, c(15:18)]
+
+b10 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch010_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b10$raw = b10$raw.pair1 + b10$raw.pair2
+b10$trimmed = b10$trimmed.orphan1 + b10$trimmed.orphan2 + b10$trimmed.pair1 + b10$trimmed.pair2
+b10$human = b10$decontaminated.Homo_sapiens.pair2 + b10$decontaminated.Homo_sapiens.pair2 + b10$decontaminated.Homo_sapiens.orphan1 + b10$decontaminated.Homo_sapiens.orphan2
+b10$final = b10$final.orphan1 + b10$final.orphan2 + b10$final.pair1 + b10$final.pair2
+b10_f = b10[, c(15:18)]
+
+b11 = read.csv("~/Dropbox (Harvard University)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional/Figures/Figure_1/KneadData/batch011_kneaddata_read_count_table.tsv", sep = "\t", row.names = 1)
+b11$raw = b11$raw.pair1 + b11$raw.pair2
+b11$trimmed = b11$trimmed.orphan1 + b11$trimmed.orphan2 + b11$trimmed.pair1 + b11$trimmed.pair2
+b11$human = b11$decontaminated.Homo_sapiens.pair2 + b11$decontaminated.Homo_sapiens.pair2 + b11$decontaminated.Homo_sapiens.orphan1 + b11$decontaminated.Homo_sapiens.orphan2
+b11$final = b11$final.orphan1 + b11$final.orphan2 + b11$final.pair1 + b11$final.pair2
+b11_f = b11[, c(15:18)]
+
+```
+
+
+```{r summary_of_reads, echo = FALSE, warning = FALSE, message = FALSE, fig.width= 20, fig.height=6}
+
+b_f = rbind(b1_f, b2_f, b3_f, b5_f, b6_f, b8_f, b9_f, b10_f, b11_f)
+b_f$SampleID = row.names(b_f)
+b_f = b_f[row.names(b_f) %in% row.names(stat_meta), ]
+b_f = melt(b_f)
+summary(b_f$value)
+sd(b_f$value)
+b_f$value = b_f$value / 1000000
+
+ggplot(b_f, aes(reorder(SampleID, value), y = value, fill = variable)) + geom_bar(stat = "identity", position = position_dodge()) + theme_classic(base_size = 20) + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank()) + scale_fill_viridis(discrete = T) + geom_hline(yintercept = 1, size = 3) + ylim(0, max(b_f$value)) + ylab("Reads remaining at each KneadData step (in millions)") + labs(fill = "QC step")
+
+
+
+```
+
+
+```{r loss_of_read, echo = FALSE, warning = FALSE, message = FALSE, fig.width= 20, fig.height=6}
+b_l = rbind(b1_f, b2_f, b3_f, b5_f, b6_f, b8_f, b9_f, b10_f, b11_f)
+b_l$trimming_loss = b_l$raw - b_l$trimmed
+b_l$human_decom = b_l$trimmed - b_l$human
+b_l$rRNA_loss = b_l$human - b_l$final
+b_l = b_l[, c(5:7)]
+b_l$SampleID = row.names(b_l)
+b_l = melt(b_l)
+b_l = b_l[b_l$SampleID %in% row.names(dat_meta), ]
+b_l$value = b_l$value/1000000
+
+ggplot(b_l, aes(reorder(SampleID, value), y = value, fill = variable)) + geom_bar(stat="identity") + theme_classic(base_size = 20) + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank()) + scale_fill_viridis(discrete = T, option = "C") + ylab("Reads lost during QC (in millions)") + labs(fill = "QC step")
+
+```
+
+```{r final_reads, echo = FALSE, warning = FALSE, message = FALSE, fig.width= 20, fig.height=6}
+b_final = rbind(b1_f, b2_f, b3_f, b5_f, b6_f, b8_f, b9_f, b10_f, b11_f)
+b_final$SampleID = row.names(b_final)
+b_final = b_final[b_final$SampleID %in% row.names(dat_meta), ]
+b_final$final = b_final$final/1000000
+b_final$diagnosis = dat_meta[match(row.names(b_final), row.names(dat_meta)), "diagnosis"]
+
+ggplot(b_final, aes(reorder(SampleID, final), y = final, fill = diagnosis)) + geom_bar(stat="identity") + theme_classic(base_size = 20) + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank()) + scale_fill_manual(values = col_diagnosis)+ ylab("Final read count (in millions)") + geom_hline(yintercept = 1, size = 2) + xlab("Samples") + labs(fill = "Patient diagnosis")
+
+```

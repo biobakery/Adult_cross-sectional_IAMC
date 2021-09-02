@@ -1,0 +1,1811 @@
+---
+title: "IAMC- Manuscript Fig1"
+author: "Kelsey N. Thompson, Ph.D."
+date: "Spring 2021"
+header-includes:
+- \usepackage{titling}
+- \pretitle{\begin{center}\LARGE\includegraphics[width=12cm]{HarvardChan_logo_center_subbrand_RGB_large.png}\\[\bigskipamount]}
+- \posttitle{\end{center}}
+output: 
+  pdf_document:
+    toc: true
+    keep_tex: true
+    dev: png
+---
+
+
+
+\newpage
+```{r setup_functions, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dpi=600)
+library(ggplot2)
+library(vegan)
+library(ggthemes)
+library(ComplexHeatmap)
+library(circlize)
+library(gridExtra)
+library(grid)
+library(pheatmap)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(gplots)
+library(gtools)
+library(plyr)
+library(dplyr)
+library(mgsub)
+library(readr)
+library(viridis)
+library(pairwiseAdonis)
+library(kableExtra)
+library(randomForest)
+library(caret)
+library(ROCR)
+library(ggridges)
+
+###### functions #######
+keep_species <-function(dat_taxa){
+  temp = dat_taxa[grepl("s__",rownames(dat_taxa)) & (!grepl("t__",rownames(dat_taxa))) & (!grepl("unclassified$",rownames(dat_taxa))),]
+  rownames(temp) = gsub(".*g__.*\\|","",rownames(temp))
+  return(temp)
+}
+
+is_common <- function(otu_df,cutoff=0.1){
+  num_row = dim(otu_df)[1]
+  num_col = dim(otu_df)[2]
+  otu_barcode = otu_df > 0.0001
+  common_index = apply(otu_barcode,1,mean) > cutoff
+  return(common_index)
+}
+
+top_abun <- function(df,num=10){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,mean),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+top_abun_median <- function(df,num=25){
+  # select top 25 abundunt species
+  index = sort(apply(df,1,median),decreasing=TRUE,index.return=TRUE)$ix[1:num]
+  return(1:dim(df)[1] %in% index)
+}
+
+
+keep_pathways <-function(dat_path){
+  temp = dat_path[!grepl("\\|",rownames(dat_path)),]
+  # rownames(temp) = gsub(":.*","",rownames(temp))
+  return(temp)
+}
+
+select_pathways <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names.select = pathway.names[index]
+  pathway.names.select = unique(gsub("\\|.*","",pathway.names.select))
+  dat_path = dat_path[pathway.names.select,]
+  # rownames(dat_path) = gsub(":.*","",rownames(dat_path))
+  return(dat_path)
+}
+
+median_matrix <-function(dat_path,dat_taxa){
+  taxa.names = rownames(dat_taxa)
+  pathway.names = rownames(dat_path)
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  index = rep(FALSE,length(pathway.names))
+  for(taxa in taxa.names){
+    index = index | grepl(taxa,pathway.names)
+  }
+  pathway.names = pathway.names[index]
+  dat_path = dat_path[pathway.names,]
+  #print(dim(dat_path))
+  #print( sum(apply(dat_path>0,1,sum) <= 0 ) )
+  
+  v_median_all = apply(dat_path,1,median)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  pathway.names.id.unique = unique(pathway.names.id)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  #out = out[,apply(out,2,median)>0]
+  out = out[,names(sort(apply(out,2,sum),decreasing = TRUE)[1:50])]
+  return(out)
+}
+
+same_median_matrix <- function(dat_median,dat_path){
+  taxa.names = rownames(dat_median)
+  pathway.names.id.unique = colnames(dat_median)
+  
+  out = matrix(0,nrow=length(taxa.names),ncol=length(pathway.names.id.unique))
+  
+  rownames(out) = taxa.names
+  colnames(out) = pathway.names.id.unique
+  
+  v_median_all = apply(dat_path,1,median)
+  
+  pathway.names = rownames(dat_path)
+  pathway.names.id = gsub("\\|.*","",rownames(dat_path))
+  
+  for(taxa in taxa.names){
+    for(pathway in pathway.names.id.unique){
+      m = v_median_all[grepl(taxa,pathway.names) & pathway == pathway.names.id]
+      if(length(m) ==1){
+        out[taxa,pathway] = m
+      }
+      if(length(m) >1){
+        print(length(m))
+      }
+    }
+  }
+  return(out)
+}
+
+#Set colors to be consistent across comparisons
+col_drug = c("DMARD conventional synthetic" = "#FFD700", "DMARD biologic" = "#4B0082", "DMARD targeted synthetic" = "#8A2BE2", "Steroid" = "#FF8C00",  "NSAID" = "#F08080", "other" = "#FF4500", "Not recorded" = "#708090", "PPI" = "#87CEFA", "none" = "#90EE90")
+col_diagnosis = c("HC" = "#000080", "RA" = 	"#800080", "AS" = "#DA70D6", "PsA" = "#008000", "NIJP" = "#66CDAA")
+col_inflammation = c("Inflammation" = "#B22222", "Some inflammation" = "#FF8C00", "Not inflamed" = "#4682B4", "Not recorded" = "#808080")
+col_rb = c("Normal" = "#5F9EA0", "Anemia" = "#FF6347", "Not recorded" = "#696969")
+
+
+setwd("/Users/kelseythompson/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Manuscript1_cross-sectional")
+```
+
+\newpage
+```{r setup_tax_meta, include=FALSE}
+map = read.delim("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/mapping_master.tsv", sep = "\t")
+map = map[, -c(1:3)]
+map$batch = as.factor(map$batch)
+
+meta_bhm_ncl = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATABHMNCL_DATA_2021-02-17_1322.csv", stringsAsFactors = FALSE)
+#Pull out each sample once
+bhm_info = subset(meta_bhm_ncl, redcap_repeat_instrument == "")
+bhm_info = bhm_info[,colSums(is.na(bhm_info))<nrow(bhm_info)]
+#Pull out just the metadata with medication
+bhm_med = subset(meta_bhm_ncl, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+bhm_med = bhm_med[,colSums(is.na(bhm_med))<nrow(bhm_med)]
+#Find out which columns are shared between the two datasets
+repeat_measure = intersect(colnames(bhm_info), colnames(bhm_med))
+repeat_measure = repeat_measure[-c(1)]
+bhm_med = bhm_med[, -which(names(bhm_med) %in% repeat_measure)]
+bhm = merge(bhm_info, bhm_med, by = "iamc_id", all = T)
+bhm$Sample = paste(bhm$iamc_id, bhm$redcap_repeat_instance, sep = "v")
+bhm$Sample = gsub("v1", "", bhm$Sample)
+bhm$Sample = gsub("vNA", "", bhm$Sample)
+row.names(bhm) = bhm$Sample
+#Add the cohort within the IAMC to the samples
+bhm$Cohort = gsub("\\d", "", row.names(bhm))
+bhm$batch = map[ match( bhm$Sample, map$sample_id ), "batch"  ]
+#Work on getting the drug category to make sense
+bhm$drug_category[is.na(bhm$drug_category)] = "Not recorded"
+bhm$drug_category = as.factor(bhm$drug_category)
+bhm$drug = recode(bhm$drug_category, "1" = "DMARD conventional synthetic", "2" = "DMARD biologic", "3" = "DMARD targeted synthetic", "4" = "Steroid", "5" = "NSAID", "6" = "other", "7" = "none", "8" = "PPI", "9" = "H2", "Not recorded" = "Not recorded", .default = "Not recorded")
+
+#Work on teh daignosis provided- Karim check these: said they were correct
+bhm$diagnosis_at_time_of_asses[is.na(bhm$diagnosis_at_time_of_asses)] = "Unknown"
+bhm$diagnosis_at_time_of_asses[(bhm$diagnosis_at_time_of_asses== "")] = "Unknown"
+bhm$diagnosis_at_time_of_asses = mgsub(bhm$diagnosis_at_time_of_asses, c("  $", " $", "^ "), c("", "", ""))
+bhm$diagnosis = recode(bhm$diagnosis_at_time_of_asses, "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "Ankylosing Spondylitis", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Drug Induced Inflammatory Arthritis" = "Drug Induced Inflammatory Arthritis", "Fibromyalgia" = "Fibromyalgia", "Gout" = "Gout", "Healthy Control" = "Healthy Control", "Healthy control" = "Healthy Control", "Healthy control.  Blood relative (Daughter) of SWEAC 0213 (BHM00024)" = "Healthy Control", "Healthy control.  Partner of SWEAC 00321 (BHM00205)" = "Healthy Control", "Lupus/Other CTD-Associated" = "Lupus/Other CTD-Associated", "Non-Inflammatory" = "Non-Inflammatory", "Non inflammatory" = "Non-Inflammatory", "PsA" = "PsA", "PSA" = "PsA", "Pseudogout" = "Pseudogout", "Pseudo Gout" = "Pseudogout", "Psoriatic Arthritis" = "PsA", "Ra (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987 & 2010)" = "RA (1987 & 2010)", "RA (1987)" = "RA (1987)", "RA (2010)" = "RA (2010)", "Reactive Arthritis" = "Reactive Arthritis", "Rheumatoid Arthritis" = "RA", "RS3PE" = "RS3PE", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "Undifferentiated Spondylo-Arthropathy", "Unknown" = "Unknown", "Osteoarthritis" = "Osteoarthritis", "Other Inflammatory Arthritis" = "Other Inflammatory Arthritis", "Inflammatory Arthritis related to Hereditary Haemochromatosis" = "Other Inflammatory Arthritis", "Palindromic Rheumatism" = "Other Inflammatory Arthritis", "Other Inflammatory" = "Other Inflammatory Arthritis", "Undifferentiated Inflammatory Arthritis" = "Clinically Suspect Arthralgia", "Enteropathic Arthritis" = "Enteropathic Arthritis", .default = "Unknown")
+
+
+bhm$arthritis_type = recode(bhm$diagnosis, "RA (1987 & 2010)" = "RA", "ACPA+ arthralgia" = "Clinically Suspect Arthralgia", "Ankylosing Spondylitis" = "AS", "Clinically Suspect Arthralgia" = "Clinically Suspect Arthralgia", "Crystal Arthritis" = "Crystal Arthritis", "Drug Induced Inflammatory Arthritis" = "other", "Fibromyalgia" = "Non-Inflammatory Joint Pain", "Gout" = "Crystal Arthritis", "Healthy Control" = "Healthy Control", "Lupus/Other CTD-Associated" = "other", "Non-Inflammatory" = "Non-Inflammatory Joint Pain", "PsA" = "PsA", "Pseudogout" = "Crystal Arthritis", "RA (1987 & 2010)" = "RA", "RA (1987)" = "RA", "RA (2010)" = "RA", "Reactive Arthritis" = "other", "RA" = "RA", "RS3PE" = "other", "Unclassified Inflammatory Arthritis" = "Unclassified Inflammatory Arthritis", "Undifferentiated Spondylo-Arthropathy" = "other", "Unknown" = "Unknown", "Osteoarthritis" = "Non-Inflammatory Joint Pain", "Other Inflammatory Arthritis" = "other", "Enteropathic Arthritis" = "other", .default = "Unknown")
+
+library(lubridate)
+bhm$DOB = parse_date_time(bhm$date_of_birth_month_year, orders = c("ymd", "dmy", "mdy"))
+bhm$DOB = gsub(" UTC", "", bhm$DOB)
+bhm$date = parse_date_time(bhm$assessment_date, orders = c("ymd", "dmy", "mdy"))
+bhm$date = gsub(" UTC", "", bhm$date)
+bhm$age = round(time_length(difftime(as.Date(bhm$date), as.Date(bhm$DOB)), "years"))
+
+#bhm$ccp = paste(bhm$anti_ccp, bhm$arthritis_type, sep = "_")
+#bhm$ccp = gsub("Not recorded/ Not known_Healthy Control", "Negative", bhm$ccp)
+#bhm$ccp = gsub("_.*", "", bhm$ccp)
+
+meta_oas = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/metadata/METADATAOAS_DATA_2021-02-17_1321.csv", head = T, sep = ",")
+oas_info = subset(meta_oas, redcap_repeat_instrument == "")
+oas_info = oas_info[,colSums(is.na(oas_info))<nrow(oas_info)]
+oas_med = subset(meta_oas, redcap_repeat_instrument == "treatment_and_concomitant_medication_at_time_of_as")
+oas_med = oas_med[,colSums(is.na(oas_med))<nrow(oas_med)]
+repeat_measure = intersect(colnames(oas_info), colnames(oas_med))
+repeat_measure = repeat_measure[-c(1)]
+oas_med = oas_med[, -which(names(oas_med) %in% repeat_measure)]
+oas = merge(oas_info, oas_med, by = "iamc_id", all = TRUE)
+oas$Sample = paste(oas$iamc_id, oas$redcap_repeat_instance, sep = "v")
+oas$Sample = gsub("v1", "", oas$Sample)
+oas$Sample = gsub("vNA", "", oas$Sample)
+row.names(oas) = oas$Sample
+oas$Cohort = rep("OAS", nrow(oas))
+oas$diagnosis = oas$patient_id
+oas$diagnosis = gsub("\\d", "", oas$diagnosis)
+oas$diagnosis = gsub("HCB", "HC", oas$diagnosis)
+oas$drug_category = (ifelse(is.na(as.character(oas$drug_category)), "Not recorded", as.character(oas$drug_category)))
+oas$drug = recode(oas$drug_category, "1" = "DMARD conventional synthetic", "2" = "DMARD biologic", "3" = "DMARD targeted synthetic", "4" = "Steroid", "5" = "NSAID", "6" = "other", "7" = "none", "8" = "PPI", "9" = "H2", "Not recorded/Not known" = "Not recorded/Not known", .default = "Not recorded/Not known")
+oas$batch = map[ match( oas$Sample, map$sample_id ), "batch"  ]
+library(lubridate)
+oas$DOB = parse_date_time(oas$date_of_birth_month_year, orders = c("ymd", "dmy", "mdy"))
+oas$DOB = gsub(" UTC", "", oas$DOB)
+oas$DOB = gsub("2065", "1965", oas$DOB)
+oas$date_of_diagnosis_2 = parse_date_time(oas$assessment_date, orders = c("ymd", "dmy", "mdy"))
+oas$date_of_diagnosis_2 = gsub(" UTC", "", oas$date_of_diagnosis_2)
+oas$age = round(time_length(difftime(as.Date(oas$date_of_diagnosis_2), as.Date(oas$DOB)), "years"))
+oas$DOB = NULL
+oas$date_of_diagnosis_2 = NULL
+oas$hla_b27 = as.character(oas$hla_b27)
+oas$hla = recode(oas$hla_b27, "Positive" = "Positive",  "positive" = "Positive", "POSITIVE " = "Positive", "POSITIVE" = "Positive", "Positive ('rare' homozygote)" = "Positive", "Negative" = "Negative", "negative" = "Negative", "NEGATIVE" = "Negative", "negative " = "Negative", "NEGATIVE " = "Negative", "Not done/Not known" = "Not done/Not known", "Not relevant" = "Not done/Not known", "Not relevant " = "Not done/Not known", .default = "Not done/Not known")
+
+
+
+#Metadata exclude
+list_oas = c("Sample", "Cohort", "drug", "esr", "batch", "crp", "disease_duration_at_time_o", "diagnosis", "smoking_current_ever_never", "ethnicity", "bmi", "gender", "iamc_id", "age", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+oas_subset = oas[ , which(colnames(oas) %in% list_oas)]
+names(oas_subset) = c("iamc_id", "gender",  "bmi", "ethnicity","smoking_current_ever_never", "disease_duration", "esr", "crp", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "Sample", "Cohort", "diagnosis", "drug", "batch", "age")
+
+list_bhm = c("Sample", "Cohort", "drug", "esr", "batch", "crp", "disease_duration_at_time", "arthritis_type", "smoking_current_ever_never", "ethnicity", "bmi", "gender", "iamc_id", "age", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+bhm_subset = bhm[ , which(colnames(bhm) %in% list_bhm)]
+names(bhm_subset) = c("iamc_id", "gender",  "bmi", "ethnicity","smoking_current_ever_never", "disease_duration", "esr", "crp", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "Sample", "Cohort", "batch",  "drug", "diagnosis", "age")
+
+meta_dat = rbind(bhm_subset, oas_subset)
+meta_dat$diagnosis = recode(meta_dat$diagnosis, "AS" = "AS", "Clinically Suspect Arthralgia" = "CSA", "Crystal Arthritis" = "Crystal Arthritis", "HC" = "HC", "Healthy Control" = "HC", "Non-Inflammatory Joint Pain" = "NIJP", "NR" = "NR", "other" = "other", "PsA" = "PsA", "RA" = "RA", "Unclassified Inflammatory Arthritis" = "Unclass", "Unknown" = "Unknown", .default = "NA")
+
+#Get the quartiles for crp
+summary(meta_dat$crp)
+#split the data into the quartiles
+quantile(meta_dat$crp, probs = c(0.33, 0.66), na.rm = T)
+meta_dat$inflammation = cut(meta_dat$crp, c(0,4,10,245), labels = c("Not inflamed", "Some inflammation", "Inflammation"))
+meta_dat$inflammation = ifelse(is.na(as.character(meta_dat$inflammation)),"Not recorded", as.character(meta_dat$inflammation))
+meta_dat$inflammation = ifelse(meta_dat$inflammation == "Not recorded" & meta_dat$diagnosis == "HC", "Not inflamed", as.character(meta_dat$inflammation))
+meta_dat$crp_corrected = ifelse(meta_dat$crp > 100, "100", as.character(meta_dat$crp))
+
+#Change the data types in some columns to make them more accurate with variables (i.e. smoking is current in 1 or 0 formats so change that column to character instead of int.)
+str(meta_dat)
+meta_dat$ethnicity = as.character(meta_dat$ethnicity)
+meta_dat$smoking_current_ever_never = as.character(meta_dat$smoking_current_ever_never)
+
+summary(meta_dat$esr)
+#meta_dat$esr_stat = ifelse(is.na(meta_dat$esr) & meta_dat$diagnosis == "HC", "7", as.character(meta_dat$esr))
+#meta_dat$esr_stat = as.numeric(meta_dat$esr_stat)
+meta_dat$disease_duration = ifelse(is.na(meta_dat$disease_duration) & meta_dat$diagnosis == "HC", "0", as.character(meta_dat$disease_duration))
+meta_dat$disease_duration = as.numeric(meta_dat$disease_duration)
+str(meta_dat)
+
+#Deal with the mess that is ethnicity classifications in redcap
+meta_dat$ethnicity = recode(meta_dat$ethnicity, "1" = "Not stated", "2" = "White", "3" = "White", "4" = "White", "5" = "Not White", "6" = "Not White", "7" = "Not White", "8" = "Not White", "9" = "Not White", "10" = "Not White", "11" = "Not White", "12" = "Not White", "13" = "Not White", "14" = "Not White", "15" = "Not White", "16" = "Not White", "17" = "Not White", "18" = "White", "19" = "Not White", "20" = "Not White", "21" = "Not White", "22" = "Not White", .default = "Not stated")
+meta_dat$ethnicity = ifelse(is.na(meta_dat$ethnicity), "Not stated", as.character(meta_dat$ethnicity))
+
+meta_dat$esr = NULL
+meta_dat$bmi = NULL
+
+#hemoglobin : categorical 135 g/L in Men and 120 g/L in women
+#atl : categorical  10-40 units per liter (U/L) of blood for men and 7-35 U/L for women
+
+# taxonomic profiles relative abundance
+dat_taxa = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Input_data/current_merged_1_11_metaphlan_table.tsv",header=TRUE,row.names=1,sep="\t") / 100
+# DNA pathway relative abundance
+dat_dna_path = read.csv("~/Dropbox (Huttenhower Lab)/hutlab/Kelsey/IAMC/Input_data/current_merged_1_11_pathway_relab.tsv",header=TRUE,row.names=1,sep="\t")
+# DNA pathway relative abundance
+dat_dna_ecs = read.csv("~/Desktop/current_merged_1_11_ecs_relab_rename.tsv",sep="\t",row.names = 1, header=T)
+
+
+### unify ID ###
+#At this point this data set does not have the addition of Sample_DNASample
+#colnames(dat_taxa) = gsub("Sample_DNASample","",colnames(dat_taxa))
+colnames(dat_taxa) = gsub("_taxonomic_profile","",colnames(dat_taxa))
+dat_taxa$current_merged = NULL
+colnames(dat_dna_path) = gsub("_Abundance","",colnames(dat_dna_path))
+colnames(dat_dna_ecs) = gsub("_Abundance.RPKs","",colnames(dat_dna_ecs))
+
+
+#Exclude samples with little to no reads
+sample_exclude = c("BHM00026", "BHM00034", "BHM00041", "BHM00109")
+dim(dat_taxa)
+dat_taxa = dat_taxa[,-which(colnames(dat_taxa) %in% sample_exclude)]
+dim(dat_taxa)
+
+tmp.ind = grep( "\\|c__", rownames(dat_taxa), invert = T )
+tmp = dat_taxa[tmp.ind,]
+tmp.ind = grep( "\\|p__", rownames(tmp))
+dat_phylum = tmp[tmp.ind,]
+row.names(dat_phylum) = gsub("k__Bacteria\\|", "", row.names(dat_phylum))
+
+dat_phylum = dat_phylum %>% group_by(row.names(dat_phylum)) %>% summarise_all(list(sum))
+colSums(dat_phylum[, -1])
+dat_phylum = data.frame(dat_phylum)
+row.names(dat_phylum) = dat_phylum$row.names.dat_phylum.
+dat_phylum$row.names.dat_phylum. = NULL
+dat_phylum = data.frame(t(dat_phylum))
+#Check to make sure all samples included have relative abundance
+check = colSums(dat_taxa) > 0
+check = subset(check, check == FALSE)
+check
+
+dat_meta = meta_dat[rownames(meta_dat) %in% colnames(dat_taxa),]
+dat_meta = subset(dat_meta, diagnosis != "Unknown" & diagnosis != "NR" & diagnosis != "Crystal Arthritis" & diagnosis != "Unclass" & diagnosis != "other" & diagnosis != "CSA")
+dat_taxa = dat_taxa[,colnames(dat_taxa) %in% rownames(dat_meta)]
+dat_dna_path = dat_dna_path[,which(colnames(dat_dna_path) %in% colnames(dat_taxa))]
+dat_dna_ecs = dat_dna_ecs[,which(colnames(dat_dna_ecs) %in% colnames(dat_taxa))]
+
+dat_meta = dat_meta[match(row.names(dat_meta), names(dat_taxa)), ]
+
+#Create a smaller file to run stats aganist
+str(dat_meta)
+stat_meta = dat_meta
+stat_meta$crp = NULL
+stat_meta$Sample = NULL
+str(stat_meta)
+row.names(stat_meta) = stat_meta$iamc_id
+stat_meta$iamc_id = NULL
+
+na_meta = is.na(stat_meta)
+inpute = colSums(na_meta)/nrow(stat_meta) * 100
+
+
+
+### select taxa ###
+# keep species (without unclassified)
+dat_taxa_species = keep_species(dat_taxa)
+# select common species (>0.0001 in more than 10% samples)
+dat_taxa_species_common = dat_taxa_species[is_common(dat_taxa_species),]
+# keep top 25 species (according to median)
+dat_taxa_species_top = dat_taxa_species[top_abun(dat_taxa_species,num=10),]
+
+### select DNA pathway ###
+# keep unstratified dna pathways
+dat_dna_path_unstratified = keep_pathways(dat_dna_path)
+dat_dna_ecs_unstratified = keep_pathways(dat_dna_ecs)
+# select top 50 unstratified dna pathways (according to median)
+dat_dna_path_unstratified_top = dat_dna_path_unstratified[top_abun(dat_dna_path_unstratified,num=10),]
+dat_dna_ecs_unstratified_top = dat_dna_ecs_unstratified[top_abun(dat_dna_ecs_unstratified,num=10),]
+# select all the unstratified dna pathways related to the top 25 species
+dat_dna_path_unstratified_select = select_pathways(dat_path=dat_dna_path,dat_taxa=dat_taxa_species_top )
+#dat_dna_ecs_unstratified_select = select_pathways(dat_ecs=dat_dna_ecs,dat_taxa=dat_taxa_species_top )
+# select all the top 50 unstratified dna pathways related to the top 25 species
+dat_dna_path_unstratified_select_top = dat_dna_path_unstratified_select[top_abun(dat_dna_path_unstratified_select,num=10),]
+
+dat_dna_path_common = dat_dna_path_unstratified[is_common(dat_dna_path_unstratified), ]
+dat_dna_ecs_common = dat_dna_ecs_unstratified[is_common(dat_dna_ecs_unstratified), ]
+
+identical(row.names(stat_meta), names(dat_taxa_species_common))
+identical(row.names(stat_meta), names(dat_dna_path_common))
+identical(row.names(stat_meta), names(dat_dna_ecs_common))
+```
+
+```{r meta_dat, include = FALSE}
+
+dat_meta$drug = gsub("Not recorded/Not known", "Not recorded", dat_meta$drug)
+dat_meta$diagnosis = ordered(dat_meta$diagnosis, c("HC", "NIJP", "AS", "RA", "PsA"))
+dat_meta$inflammation = ordered(dat_meta$inflammation, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+dat_meta$diagnosis = ordered(dat_meta$diagnosis, c("HC", "NIJP", "AS", "PsA", "RA"))
+dat_meta$crp_corrected =  as.numeric(dat_meta$crp_corrected)
+dat_meta$smoking = recode(dat_meta$smoking_current_ever_never, "1" = "Current", "2" = "Ever", "3" = "Never", "-1" = "Not recorded", .default = "Not recorded")
+dat_meta$smoking = as.character(dat_meta$smoking)
+dat_meta$smoking[is.na(dat_meta$smoking)] = "Not recorded"
+col_smoke = c("Current" = "#DC143C", "Ever" = "#FF7F50", "Never" = "#66CDAA", "Not recorded" = "#696969")
+
+bhm_dat = bhm[row.names(bhm) %in% row.names(dat_meta), ]
+bhm_dat$inflammation = dat_meta[match(row.names(bhm_dat), row.names(dat_meta)), "inflammation"]
+bhm_dat$anti_ccp_status = recode(bhm_dat$anti_ccp_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$anti_ccp_status[is.na(bhm_dat$anti_ccp_status)] = "Not recorded"
+bhm_dat$anti_ccp_status = ordered(bhm_dat$anti_ccp_status, c("Positive", "Negative", "Not recorded"))
+bhm_dat$rf = recode(bhm_dat$rf_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$rf[is.na(bhm_dat$rf)] = "Not recorded"
+bhm_dat$arthritis_type = droplevels(as.factor(bhm_dat$arthritis_type))
+bhm_dat$arthritis_type = as.character(bhm_dat$arthritis_type)
+bhm_dat$arthritis_type = mgsub(bhm_dat$arthritis_type, c("Healthy Control", "Non-Inflammatory Joint Pain"), c("HC", "NIJP"))
+bhm_dat$rf = ordered(bhm_dat$rf, c("Positive", "Negative", "Not recorded"))
+
+oas_dat = oas[row.names(oas) %in% row.names(dat_meta), ]
+oas_dat$inflammation = dat_meta[match(row.names(oas_dat), row.names(dat_meta)), "inflammation"]
+oas_dat$hla_b27 = as.factor(oas_dat$hla_b27)
+oas_dat$hla_b27 = droplevels(oas_dat$hla_b27)
+oas_dat$hla_b27 = gsub(" $", "", oas_dat$hla_b27)
+oas_dat$hla = recode(oas_dat$hla_b27, "negative" = "Negative", "Negative" = "Negative", "NEGATIVE " = "Negative", "Not done/Not known" = "Not recorded", "Not relevant" = "Not recorded", "postive" = "Positive", "Positive" = "Positive", "POSITIVE" = "Positive", "Positive ('rare' homozygote)" = "Positive", .default = "Not recorded")
+oas_dat$hla = ordered(oas_dat$hla, c("Positive", "Negative", "Not recorded"))
+
+```
+
+\newpage
+# PERMANOVA results  
+
+## Taxonomy (All samples)
+
+Species abundances are passed through a basic filter requiring each species to have at least 0.01 % abundance in at least 10 % of all samples.
+A total of `r nrow(dat_taxa_species)` species were identified. After basic filtering `r ncol(dat_taxa_species_common)` species remained.  
+
+```{r beta_tax, include= FALSE}
+dat_taxa_species_common = data.frame(t(dat_taxa_species_common))
+bray = vegdist(dat_taxa_species_common, "bray")
+bray
+
+stat_meta = stat_meta[complete.cases(stat_meta$age), ]
+dat_taxa_species_common = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(stat_meta), ]
+bray = vegdist(dat_taxa_species_common, "bray")
+
+stat_meta$smoking = recode(stat_meta$smoking_current_ever_never, "1" = "Current", "2" = "Ever", "3" = "Never", "-1" = "Not recorded", .default = "Not recorded")
+stat_meta$smoking = as.character(stat_meta$smoking)
+stat_meta$smoking[is.na(stat_meta$smoking)] = "Not recorded"
+stat_meta$smoking_current_ever_never = NULL
+
+colSums(is.na(stat_meta))
+
+stat_meta$drug = gsub("Not recorded/Not known", "Not recorded", stat_meta$drug)
+
+meta_disease_duration = stat_meta[complete.cases(stat_meta$disease_duration), ]
+species_disease_duration = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(meta_disease_duration), ]
+#meta_disease_duration = meta_disease_duration[row.names(species_disease_duration), match(row.names(meta_disease_duration)), ]
+identical(row.names(species_disease_duration), row.names(meta_disease_duration))
+bray_disease_duration = vegdist(species_disease_duration, "bray")
+
+meta_crp = stat_meta[complete.cases(stat_meta$crp_corrected), ]
+meta_crp$crp_corrected = as.numeric(meta_crp$crp_corrected)
+species_crp = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(meta_crp), ]
+bray_crp = vegdist(species_crp, "bray")
+
+meta_alt = stat_meta[complete.cases(stat_meta$alt), ]
+list_alt = c("haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol", "batch")
+meta_alt = meta_alt[, which(names(meta_alt) %in% list_alt)]
+species_alt = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(meta_alt), ]
+bray_alt = vegdist(species_alt, "bray")
+
+
+na = c("disease_duration", "crp_corrected", "haemoglobin", "albumin", "alt", "alkaline_phosphatase", "bilirubin_umol")
+meta_wo_na = stat_meta[, -which(names(stat_meta) %in% na)]
+str(meta_wo_na)
+
+```
+
+```{r adonis_univariate_tax, echo = FALSE, warning = FALSE, message = FALSE}
+library(tidyr)
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(meta_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray ~ batch +", col)), data = meta_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+disease_duration = adonis(bray_disease_duration ~ batch + disease_duration, data = meta_disease_duration)
+adonis_res_pval$disease_duration = disease_duration$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$disease_duration = disease_duration$aov.tab[2,]$R2
+
+crp_corrected = adonis(bray_crp ~ batch + crp_corrected, data = meta_crp)
+adonis_res_pval$crp_corrected = crp_corrected$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$crp_corrected = crp_corrected$aov.tab[2,]$R2
+
+for (col in names(meta_alt)){
+  adonis.univ = adonis(as.formula(paste("bray_alt ~ batch +", col)), data = meta_alt)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+
+collect_correct = adonis(bray ~ batch + diagnosis + Cohort, data = meta_wo_na)
+adonis_res_pval$collect_correct = collect_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$collect_correct = collect_correct$aov.tab[3,]$R2
+
+gender_correct = adonis(bray ~ batch + diagnosis + gender, data = meta_wo_na)
+adonis_res_pval$gender_correct = gender_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$gender_correct = gender_correct$aov.tab[3,]$R2
+
+batch = adonis(bray ~ batch, data = meta_wo_na)
+adonis_res_pval$batch_real = batch$aov.tab[1,]$`Pr(>F)`
+adonis_res_rsq$batch_real = batch$aov.tab[1,]$R2
+
+
+univar_res_tax = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_tax = as.data.frame(t(univar_res_tax))
+names(univar_res_tax) = c("P-Value", "R2")
+univar_res_tax$`P-Value` = as.numeric(univar_res_tax$`P-Value`)
+univar_res_tax$R2 = as.numeric(univar_res_tax$R2)
+univar_res_tax$p_adj = p.adjust(univar_res_tax$`P-Value`, "fdr")
+univar_res_tax = subset(univar_res_tax, row.names(univar_res_tax) != "batch" & row.names(univar_res_tax) != "Cohort" & row.names(univar_res_tax) != "gender")
+list_rownames = c("Ethnicity", "Current Arthritis Modifying Drug", "Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status", "Disease Duration", "CRP-value", "Haemoglobin", "Albumin", "Alanine Aminotransferase", "Alkaline Phosphatase", "Bilirubin", "Collection Site*", "Sex*", "Sequencing Batch")
+univar_res_tax$clinical = list_rownames
+
+univar_res_tax$stars = cut(univar_res_tax$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+```{r barplot_univ_statistics_tax_all, echo= FALSE, warning = FALSE, message = FALSE, dpi = 300}
+univar_res_tax$p_adj = round(univar_res_tax$p_adj, 3)
+univar_res_tax$R2 = univar_res_tax$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_tax, aes(reorder(clinical, univar_res_tax$R2), y = R2, label = univar_res_tax$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_tax$data_type = c("Taxonomy")
+```
+
+
+\newpage
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by diagnosis.
+
+```{r bray_comparisons_tax_diangosis, echo= FALSE, warning = FALSE, message = FALSE, dpi=300}
+
+bray_mat = as.matrix(bray)
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_col", "diagnosis_row", "row", "col", "bray_distance")
+
+df_HC_dia_tax = subset(bray_df, diagnosis_row == "HC")
+df_HC_dia_tax$comparisons = paste(df_HC_dia_tax$diagnosis_col, df_HC_dia_tax$diagnosis_row, sep = "_")
+
+ggplot(df_HC_dia_tax, aes(x = diagnosis_col, y = bray_distance, color = diagnosis_col, add = "jitter")) + geom_boxplot(lwd =2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_diagnosis) + labs(color = "Patient diagnosis")
+
+df_HC_dia_tax$data_type = "Taxonomy"
+
+```
+
+\newpage
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by inflammation.  
+
+```{r bray_comparisons_tax_inflammation, echo= FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_col", "inflammation_row", "row", "col", "bray_distance")
+
+
+
+df_HC_inflam_tax = subset(bray_df, inflammation_row == "Not inflamed")
+df_HC_inflam_tax$comparisons = paste(df_HC_inflam_tax$inflammation_col, df_HC_inflam_tax$inflammation_row, sep = "_")
+df_HC_inflam_tax$inflammation_col = ordered(df_HC_inflam_tax$inflammation_col, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+
+ggplot(df_HC_inflam_tax, aes(x = inflammation_col, y = bray_distance, color = inflammation_col, add = "jitter")) + geom_boxplot(lwd = 2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation (CRP)")
+
+df_HC_inflam_tax$data_type = "Taxonomy"
+
+```
+
+\newpage
+
+## Pathways (All data)  
+
+```{r beta_path, include= FALSE}
+#DNA pathway abundance bray
+# calculate bray curtis dissimilarity
+dat_dna_path_common = data.frame(t(dat_dna_path_common), check.names = F)
+identical(row.names(stat_meta), row.names(dat_dna_path_common))
+dat_dna_path_common = dat_dna_path_common[row.names(dat_dna_path_common) %in% row.names(stat_meta), ]
+bray_path_dna = vegdist(dat_dna_path_common, "bray")
+bray_path_dna
+
+
+dna_disease_duration = dat_dna_path_common[row.names(dat_dna_path_common) %in% row.names(meta_disease_duration), ]
+bray_disease_duration = vegdist(dna_disease_duration, "bray")
+
+dna_crp = dat_dna_path_common[row.names(dat_dna_path_common) %in% row.names(meta_crp), ]
+bray_crp = vegdist(dna_crp, "bray")
+
+dna_alt = dat_dna_path_common[row.names(dat_dna_path_common) %in% row.names(meta_alt), ]
+bray_alt = vegdist(dna_alt, "bray")
+
+```
+
+```{r adonis_univariate_path, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(meta_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_path_dna ~ batch +", col)), data = meta_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+disease_duration = adonis(bray_disease_duration ~ batch + disease_duration, data = meta_disease_duration)
+adonis_res_pval$disease_duration = disease_duration$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$disease_duration = disease_duration$aov.tab[2,]$R2
+
+crp_stat = adonis(bray_crp ~ batch + crp_corrected, data = meta_crp)
+adonis_res_pval$crp_stat = crp_stat$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$crp_stat = crp_stat$aov.tab[2,]$R2
+
+for (col in names(meta_alt)){
+  adonis.univ = adonis(as.formula(paste("bray_alt ~ batch +", col)), data = meta_alt)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+collect_correct = adonis(bray_path_dna ~ batch + diagnosis + Cohort, data = meta_wo_na)
+adonis_res_pval$collect_correct = collect_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$collect_correct = collect_correct$aov.tab[3,]$R2
+
+gender_correct = adonis(bray_path_dna ~ batch + diagnosis + gender, data = meta_wo_na)
+adonis_res_pval$gender_correct = gender_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$gender_correct = gender_correct$aov.tab[3,]$R2
+
+batch = adonis(bray_path_dna ~ batch, data = meta_wo_na)
+adonis_res_pval$batch_real = batch$aov.tab[1,]$`Pr(>F)`
+adonis_res_rsq$batch_real = batch$aov.tab[1,]$R2
+
+
+univar_res_path = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_path = as.data.frame(t(univar_res_path))
+names(univar_res_path) = c("P-Value", "R2")
+univar_res_path$`P-Value` = as.numeric(univar_res_path$`P-Value`)
+univar_res_path$R2 = as.numeric(univar_res_path$R2)
+univar_res_path$p_adj = p.adjust(univar_res_path$`P-Value`, "fdr")
+univar_res_path = subset(univar_res_path, row.names(univar_res_path) != "batch" & row.names(univar_res_path) != "Cohort" & row.names(univar_res_path) != "gender")
+list_rownames = c("Ethnicity", "Current Arthritis Modifying Drug", "Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status", "Disease Duration", "CRP-value", "Haemoglobin", "Albumin", "Alanine Aminotransferase", "Alkaline Phosphatase", "Bilirubin", "Collection Site*", "Sex*", "Sequencing Batch")
+univar_res_path$clinical = list_rownames
+
+univar_res_path$stars = cut(univar_res_path$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+```{r barplot_univ_statistics_all_path, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_path$p_adj = round(univar_res_path$p_adj, 3)
+univar_res_path$R2 = univar_res_path$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_path, aes(reorder(clinical, univar_res_path$R2), y = R2, label = univar_res_path$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_path$data_type = c("Pathways")
+```
+
+
+\newpage
+
+### Comparisons to HC populations
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by diagnosis.
+
+```{r bray_comparisons_path_diangosis, echo= FALSE, warning = FALSE, message = FALSE}
+
+bray_mat = as.matrix(bray_path_dna)
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_col", "diagnosis_row", "row", "col", "bray_distance")
+
+df_HC_dia_path = subset(bray_df, diagnosis_row == "HC")
+df_HC_dia_path$comparisons = paste(df_HC_dia_path$diagnosis_col, df_HC_dia_path$diagnosis_row, sep = "_")
+
+ggplot(df_HC_dia_path, aes(x = diagnosis_col, y = bray_distance, color = diagnosis_col, add = "jitter")) + geom_boxplot(lwd = 2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_diagnosis) + labs(color = "Patient diagnosis")
+
+df_HC_dia_path$data_type = "Pathways"
+
+```
+
+\newpage
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by inflammation.  
+
+```{r bray_comparisons_path_inflammation, echo= FALSE, warning = FALSE, message = FALSE}
+
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_col", "inflammation_row", "row", "col", "bray_distance")
+
+
+
+df_HC_inflam_path = subset(bray_df, inflammation_row == "Not inflamed")
+df_HC_inflam_path$comparisons = paste(df_HC_inflam_path$inflammation_col, df_HC_inflam_path$inflammation_row, sep = "_")
+df_HC_inflam_path$inflammation_col = ordered(df_HC_inflam_path$inflammation_col, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+
+ggplot(df_HC_inflam_path, aes(x = inflammation_col, y = bray_distance, color = inflammation_col, add = "jitter")) + geom_boxplot(lwd = 2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation (CRP)")
+
+df_HC_inflam_path$data_type = "Pathways"
+
+```
+
+\newpage
+
+## ECs (All data)  
+
+```{r beta_ecs, include= FALSE}
+#DNA pathway abundance bray
+# calculate bray curtis dissimilarity
+dat_dna_ecs_common = t(dat_dna_ecs_common)
+identical(row.names(stat_meta), row.names(dat_dna_ecs_common))
+dat_dna_ecs_common = dat_dna_ecs_common[row.names(dat_dna_ecs_common) %in% row.names(stat_meta), ]
+bray_ecs_dna = vegdist(dat_dna_ecs_common, "bray")
+bray_ecs_dna
+
+dna_disease_duration = dat_dna_ecs_common[row.names(dat_dna_ecs_common) %in% row.names(meta_disease_duration), ]
+bray_disease_duration = vegdist(dna_disease_duration, "bray")
+
+dna_crp = dat_dna_ecs_common[row.names(dat_dna_ecs_common) %in% row.names(meta_crp), ]
+bray_crp = vegdist(dna_crp, "bray")
+
+dna_alt = dat_dna_ecs_common[row.names(dat_dna_ecs_common) %in% row.names(meta_alt), ]
+bray_alt = vegdist(dna_alt, "bray")
+
+```
+
+
+```{r adonis_univariate_ecs, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(meta_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_ecs_dna ~ batch +", col)), data = meta_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+disease_duration = adonis(bray_disease_duration ~ batch + disease_duration, data = meta_disease_duration)
+adonis_res_pval$disease_duration = disease_duration$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$disease_duration = disease_duration$aov.tab[2,]$R2
+
+crp_stat = adonis(bray_crp ~ batch + crp_corrected, data = meta_crp)
+adonis_res_pval$crp_stat = crp_stat$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$crp_stat = crp_stat$aov.tab[2,]$R2
+
+for (col in names(meta_alt)){
+  adonis.univ = adonis(as.formula(paste("bray_alt ~ batch +", col)), data = meta_alt)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+collect_correct = adonis(bray_ecs_dna ~ batch + diagnosis + Cohort, data = meta_wo_na)
+adonis_res_pval$collect_correct = collect_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$collect_correct = collect_correct$aov.tab[3,]$R2
+
+gender_correct = adonis(bray_ecs_dna ~ batch + diagnosis + gender, data = meta_wo_na)
+adonis_res_pval$gender_correct = gender_correct$aov.tab[3,]$`Pr(>F)`
+adonis_res_rsq$gender_correct = gender_correct$aov.tab[3,]$R2
+
+batch = adonis(bray_ecs_dna ~ batch, data = meta_wo_na)
+adonis_res_pval$batch_real = batch$aov.tab[1,]$`Pr(>F)`
+adonis_res_rsq$batch_real = batch$aov.tab[1,]$R2
+
+
+univar_res_ecs = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_ecs = as.data.frame(t(univar_res_ecs))
+names(univar_res_ecs) = c("P-Value", "R2")
+univar_res_ecs$`P-Value` = as.numeric(univar_res_ecs$`P-Value`)
+univar_res_ecs$R2 = as.numeric(univar_res_ecs$R2)
+univar_res_ecs$p_adj = p.adjust(univar_res_ecs$`P-Value`, "fdr")
+univar_res_ecs = subset(univar_res_ecs, row.names(univar_res_ecs) != "batch" & row.names(univar_res_ecs) != "Cohort" & row.names(univar_res_ecs) != "gender")
+list_rownames = c("Ethnicity", "Current Arthritis Modifying Drug", "Diagnosis", "Age", "Inflammation (crp-value)", "Smoking status", "Disease Duration", "CRP-value", "Haemoglobin", "Albumin", "Alanine Aminotransferase", "Alkaline Phosphatase", "Bilirubin", "Collection Site*", "Sex*", "Sequencing Batch")
+univar_res_ecs$clinical = list_rownames
+
+univar_res_ecs$stars = cut(univar_res_ecs$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+```{r barplot_univ_statistics_ecs, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_ecs$p_adj = round(univar_res_ecs$p_adj, 3)
+univar_res_ecs$R2 = univar_res_ecs$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_ecs, aes(reorder(clinical, univar_res_ecs$R2), y = R2, label = univar_res_ecs$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_ecs$data_type = c("ECs")
+```
+\newpage
+
+### Pairwise comparisons to HC populations  
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by diagnosis.  
+
+```{r bray_comparisons_ecs_diangosis, echo= FALSE, warning = FALSE, message = FALSE}
+bray_mat = as.matrix(bray_ecs_dna)
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "diagnosis"], bray_df)
+names(bray_df) = c("diagnosis_col", "diagnosis_row", "row", "col", "bray_distance")
+
+
+
+df_HC_dia_ecs = subset(bray_df, diagnosis_row == "HC")
+df_HC_dia_ecs$comparisons = paste(df_HC_dia_ecs$diagnosis_col, df_HC_dia_ecs$diagnosis_row, sep = "_")
+
+ggplot(df_HC_dia_ecs, aes(x = diagnosis_col, y = bray_distance, color = diagnosis_col, add = "jitter")) + geom_boxplot(lwd = 2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_diagnosis) + labs(color = "Patient diagnosis")
+
+df_HC_dia_ecs$data_type = "ECs"
+
+```
+
+\newpage
+
+Boxplots comparisons of the bray distance between samples. All groups are compared to the control samples. Here they are colored by inflammation.  
+
+```{r bray_comparisons_ecs_inflammation, echo= FALSE, warning = FALSE, message = FALSE}
+
+bray_df = melt(bray_mat)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(dat_meta[ match(bray_df$Var1, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_row", "row", "col", "bray_distance")
+bray_df = cbind(dat_meta[ match(bray_df$col, row.names(dat_meta)), "inflammation"], bray_df)
+names(bray_df) = c("inflammation_col", "inflammation_row", "row", "col", "bray_distance")
+
+
+
+df_HC_inflam_ecs = subset(bray_df, inflammation_row == "Not inflamed")
+df_HC_inflam_ecs$comparisons = paste(df_HC_inflam_ecs$inflammation_col, df_HC_inflam_ecs$inflammation_row, sep = "_")
+df_HC_inflam_ecs$inflammation_col = ordered(df_HC_inflam_ecs$inflammation_col, c("Not inflamed", "Some inflammation", "Inflammation", "Not recorded"))
+
+ggplot(df_HC_inflam_ecs, aes(x = inflammation_col, y = bray_distance, color = inflammation_col, add = "jitter")) + geom_boxplot(lwd = 2) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + xlab("Average change") + ylab("Bray Distance") + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation (CRP)")
+
+df_HC_inflam_ecs$data_type = "ECs"
+
+```
+
+
+
+\newpage
+# Disease-sepcific endpoints
+
+## Taxonomy (OAS Data)  
+
+```{r prep_work_for_AS_specific_endpoints, include= FALSE}
+oas_dat = oas[row.names(oas) %in% row.names(stat_meta), ]
+str(oas_dat)
+oas_clin = c("disease_duration_at_time_o", "crp", "ibd", "psoriasis", "basdai", "diagnosis", "drug", "batch", "age", "hla")
+
+na_oas = c("ibd", "batch", "hla")
+
+dat_taxa_oas = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(oas_dat), ]
+dat_taxa_oas = data.frame(t(dat_taxa_oas), check.names = F)
+dat_taxa_oas = dat_taxa_oas[is_common(dat_taxa_oas), ]
+dat_taxa_oas = data.frame(t(dat_taxa_oas), check.names = F)
+
+oas_dat = oas_dat[, colnames(oas_dat) %in% oas_clin]
+colSums(is.na(oas_dat))
+
+oas_sub = subset(oas_dat, diagnosis != "HC")
+colSums(is.na(oas_sub))
+oas_wo_na = oas_sub[, colnames(oas_sub) %in% na_oas]
+oas_wo_na$ibd = mgsub(as.character(oas_wo_na$ibd), c("No", "no"), c("Negative", "Negative"))
+oas_wo_na$ibd[oas_wo_na$ibd == ""] = "Negative"
+#oas_wo_na$psoriasis = mgsub(as.character(oas_wo_na$psoriasis), c("No", "Yes"), c("Negative", "Positive"))
+dat_taxa_oas_sub = dat_taxa_oas[row.names(dat_taxa_oas) %in% row.names(oas_sub), ]
+bray_oas = vegdist(dat_taxa_oas_sub, "bray")
+
+oas_basdai = oas_sub[complete.cases(oas_sub$basdai), ]
+dat_taxa_oas_basdai = dat_taxa_oas[row.names(dat_taxa_oas) %in% row.names(oas_basdai), ]
+bray_oas_basdai = vegdist(dat_taxa_oas_basdai, "bray")
+
+```
+
+```{r adonis_univariate_tax_oas, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(oas_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_oas ~ batch +", col)), data = oas_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+basdai = adonis(bray_oas_basdai ~ batch + basdai, data = oas_basdai)
+adonis_res_pval$basdai = basdai$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$basdai = basdai$aov.tab[2,]$R2
+
+
+univar_res_oas = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_oas = as.data.frame(t(univar_res_oas))
+names(univar_res_oas) = c("P-Value", "R2")
+univar_res_oas$`P-Value` = as.numeric(univar_res_oas$`P-Value`)
+univar_res_oas$R2 = as.numeric(univar_res_oas$R2)
+univar_res_oas$p_adj = p.adjust(univar_res_oas$`P-Value`, "fdr")
+univar_res_oas = subset(univar_res_oas, row.names(univar_res_oas) != "batch")
+list_rownames = c("IBD (OAS)", "HLA-B27 (OAS)", "BASDAI (OAS)")
+univar_res_oas$clinical = list_rownames
+
+univar_res_oas$stars = cut(univar_res_oas$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+```{r barplot_univ_statistics_oas_tax, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_oas$p_adj = round(univar_res_oas$p_adj, 3)
+univar_res_oas$R2 = univar_res_oas$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_oas, aes(reorder(clinical, univar_res_oas$R2), y = R2, label = univar_res_oas$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_oas$data_type = c("Taxonomy (OAS)")
+```
+
+
+\newpage 
+
+## Pathways (OAS data)  
+
+```{r prep_work_for_AS_specific_endpoints_path, include= FALSE}
+
+dat_path_oas = dat_dna_path_common[row.names(dat_dna_path_common) %in% row.names(oas_dat), ]
+dat_path_oas = data.frame(t(dat_path_oas), check.names = F)
+dat_path_oas = dat_path_oas[is_common(dat_path_oas), ]
+dat_path_oas = data.frame(t(dat_path_oas), check.names = F)
+
+dat_path_oas_sub = dat_path_oas[row.names(dat_path_oas) %in% row.names(oas_sub), ]
+bray_oas_path = vegdist(dat_path_oas_sub, "bray")
+
+oas_basdai = oas_sub[complete.cases(oas_sub$basdai), ]
+dat_path_oas_basdai = dat_path_oas[row.names(dat_path_oas) %in% row.names(oas_basdai), ]
+bray_oas_path_basdai = vegdist(dat_path_oas_basdai, "bray")
+
+```
+
+```{r adonis_univariate_oas_path, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(oas_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_oas_path ~ batch +", col)), data = oas_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+basdai = adonis(bray_oas_path_basdai ~ batch + basdai, data = oas_basdai)
+adonis_res_pval$basdai = basdai$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$basdai = basdai$aov.tab[2,]$R2
+
+
+univar_res_oas_path = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_oas_path = as.data.frame(t(univar_res_oas_path))
+names(univar_res_oas_path) = c("P-Value", "R2")
+univar_res_oas_path$`P-Value` = as.numeric(univar_res_oas_path$`P-Value`)
+univar_res_oas_path$R2 = as.numeric(univar_res_oas_path$R2)
+univar_res_oas_path$p_adj = p.adjust(univar_res_oas_path$`P-Value`, "fdr")
+univar_res_oas_path = subset(univar_res_oas_path, row.names(univar_res_oas_path) != "batch")
+list_rownames = c("IBD (OAS)", "HLA-B27 (OAS)", "BASDAI (OAS)")
+univar_res_oas_path$clinical = list_rownames
+
+univar_res_oas_path$stars = cut(univar_res_oas_path$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+
+```{r barplot_univ_statistics_oas_path, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_oas_path$p_adj = round(univar_res_oas_path$p_adj, 3)
+univar_res_oas_path$R2 = univar_res_oas_path$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_oas_path, aes(reorder(clinical, univar_res_oas_path$R2), y = R2, label = univar_res_oas_path$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_oas_path$data_type = c("Pathways (OAS)")
+```
+
+\newpage 
+
+## ECs (OAS Data)  
+
+```{r prep_work_for_AS_specific_endpoints_ecs, include= FALSE}
+
+dat_ecs_oas = dat_dna_ecs_common[row.names(dat_dna_ecs_common) %in% row.names(oas_dat), ]
+dat_ecs_oas = data.frame(t(dat_ecs_oas), check.names = F)
+dat_ecs_oas = dat_ecs_oas[is_common(dat_ecs_oas), ]
+dat_ecs_oas = data.frame(t(dat_ecs_oas), check.names = F)
+
+dat_ecs_oas_sub = dat_ecs_oas[row.names(dat_ecs_oas) %in% row.names(oas_sub), ]
+bray_oas_ecs = vegdist(dat_ecs_oas_sub, "bray")
+
+dat_ecs_oas_basdai = dat_ecs_oas[row.names(dat_ecs_oas) %in% row.names(oas_basdai), ]
+bray_oas_ecs_basdai = vegdist(dat_ecs_oas_basdai, "bray")
+
+```
+
+```{r adonis_univariate_oas_ecs, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(oas_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_oas_ecs ~ batch +", col)), data = oas_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+basdai = adonis(bray_oas_ecs_basdai ~ batch + basdai, data = oas_basdai)
+adonis_res_pval$basdai = basdai$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$basdai = basdai$aov.tab[2,]$R2
+
+
+univar_res_oas_ecs = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_oas_ecs = as.data.frame(t(univar_res_oas_ecs))
+names(univar_res_oas_ecs) = c("P-Value", "R2")
+univar_res_oas_ecs$`P-Value` = as.numeric(univar_res_oas_ecs$`P-Value`)
+univar_res_oas_ecs$R2 = as.numeric(univar_res_oas_ecs$R2)
+univar_res_oas_ecs$p_adj = p.adjust(univar_res_oas_ecs$`P-Value`, "fdr")
+univar_res_oas_ecs = subset(univar_res_oas_ecs, row.names(univar_res_oas_ecs) != "batch")
+list_rownames = c("IBD (OAS)", "HLA-B27 (OAS)", "BASDAI (OAS)")
+univar_res_oas_ecs$clinical = list_rownames
+
+univar_res_oas_ecs$stars = cut(univar_res_oas_ecs$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+
+```{r barplot_univ_statistics_oas_ecs, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_oas_ecs$p_adj = round(univar_res_oas_ecs$p_adj, 3)
+univar_res_oas_ecs$R2 = univar_res_oas_ecs$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_oas_ecs, aes(reorder(clinical, univar_res_oas_ecs$R2), y = R2, label = univar_res_oas_ecs$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_oas_ecs$data_type = c("ECs (OAS)")
+```
+
+\newpage
+
+## Taxonomy (BHM/NCL Data)  
+
+```{r prep_work_for_BHM_specific_endpoints, include= FALSE}
+bhm_dat = bhm[row.names(bhm) %in% row.names(stat_meta), ]
+bhm_dat$arthritis_type = mgsub(bhm_dat$arthritis_type, c("Non-Inflammatory Joint Pain", "Healthy Control"), c("NIJP", "HC"))
+bhm_dat$anti_ccp_status = recode(bhm_dat$anti_ccp_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$rf_status = recode(bhm_dat$rf_status, "1" = "Negative", "2" = "Positive", "-1" = "Not recorded", .default = "Not recorded")
+bhm_dat$rf[is.na(bhm_dat$rf_status)] = "Not recorded"
+str(bhm_dat)
+bhm_clin = c("bmi", "ethnicity", "smoking_current_ever_never", "disease_duration_at_time", "anti_ccp_status", "anti_ccp_value", "cit_igg_status", "cit_igg_range", "cit_igg_value", "orn_ac_igg_status", "orn_ac_igg_range", "orn_ac_igg_value", "carb_igg_status", "carb_igg_range", "carb_igg_value", "lys_ac_igg_status", "lys_ac_igg_range", "lys_ac_igg_value", "cit_iga_status", "cit_iga_range", "cit_iga_value", "orn_ac_iga_status", "orn_ac_iga_range", "orn_ac_iga_value", "carb_iga_status", "carb_iga_range", "carb_iga_value", "lys_ac_iga_status", "lys_ac_iga_range", "lys_ac_iga_value", "tjc68", "sjc66", "tjc_28", "sjc_28", "esr", "crp", "das28_crp", "das28_esr", "Cohort", "batch", "drug", "arthritis_type", "age", "rf_status")
+
+dat_taxa_bhm = dat_taxa_species_common[row.names(dat_taxa_species_common) %in% row.names(bhm_dat), ]
+dat_taxa_bhm = data.frame(t(dat_taxa_bhm), check.names = F)
+dat_taxa_bhm = dat_taxa_bhm[is_common(dat_taxa_bhm), ]
+dat_taxa_bhm = data.frame(t(dat_taxa_bhm), check.names = F)
+
+bhm_dat = bhm_dat[, colnames(bhm_dat) %in% bhm_clin]
+colSums(is.na(bhm_dat))
+
+bhm_sub = subset(bhm_dat, arthritis_type != "HC")
+colSums(is.na(bhm_sub))
+bhm_sub$anti_ccp_status[is.na(bhm_sub$anti_ccp_status)] = "Not recorded"
+bhm_sub$rf_status[is.na(bhm_sub$rf_status)] = "Not recorded"
+dat_taxa_bhm_sub = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(bhm_sub), ]
+bray_bhm = vegdist(dat_taxa_bhm_sub, "bray")
+
+bhm_anti = bhm_sub[complete.cases(bhm_sub$cit_igg_status), ]
+bhm_anti = bhm_anti[, c(8:30, 41)]
+list_anti = grep("_range", names(bhm_anti), value = T)
+bhm_anti = bhm_anti[, -which(colnames(bhm_anti) %in% list_anti)]
+dat_taxa_bhm_anti = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(bhm_anti), ]
+bray_bhm_anti = vegdist(dat_taxa_bhm_anti, "bray")
+bhm_anti[, c(1, 3, 5, 7, 9, 11, 13)] = sapply(bhm_anti[, c(1, 3, 5, 7, 9, 11, 13)], as.character)
+
+meta_bhm_anti_ccp = bhm_sub[complete.cases(bhm_sub$anti_ccp_value), ]
+dat_taxa_bhm_ccp = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(meta_bhm_anti_ccp), ]
+bray_bhm_ccp = vegdist(dat_taxa_bhm_ccp, "bray")
+
+meta_bhm_tjc = bhm_sub[complete.cases(bhm_sub$tjc_28), ]
+dat_taxa_bhm_tjc = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(meta_bhm_tjc), ]
+bray_bhm_tjc = vegdist(dat_taxa_bhm_tjc, "bray")
+
+meta_bhm_sjc = bhm_sub[complete.cases(bhm_sub$sjc_28), ]
+dat_taxa_bhm_sjc = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(meta_bhm_sjc), ]
+bray_bhm_sjc = vegdist(dat_taxa_bhm_sjc, "bray")
+
+meta_bhm_esr = bhm_sub[complete.cases(bhm_sub$esr), ]
+dat_taxa_bhm_esr = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(meta_bhm_esr), ]
+bray_bhm_esr = vegdist(dat_taxa_bhm_esr, "bray")
+
+meta_bhm_das28_crp = bhm_sub[complete.cases(bhm_sub$das28_crp), ]
+dat_taxa_bhm_das28_crp = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(meta_bhm_das28_crp), ]
+bray_bhm_das28_crp = vegdist(dat_taxa_bhm_das28_crp, "bray")
+
+meta_bhm_das28_esr = bhm_sub[complete.cases(bhm_sub$das28_esr), ]
+dat_taxa_bhm_das28_esr = dat_taxa_bhm[row.names(dat_taxa_bhm) %in% row.names(meta_bhm_das28_esr), ]
+bray_bhm_das28_esr = vegdist(dat_taxa_bhm_das28_esr, "bray")
+
+na_bhm = c("anti_ccp_status", "tjc68", "sjc66", "Cohort", "batch", "arthritis_type", "age", "rf_status")
+bhm_wo_na = bhm_sub[,colnames(bhm_sub) %in% na_bhm]
+
+```
+
+
+```{r adonis_univariate_bhm_tax, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(bhm_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_bhm ~ batch +", col)), data = bhm_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+adonis_res_pval = subset(adonis_res_pval, names(adonis_res_pval) != "batch")
+adonis_res_rsq = subset(adonis_res_rsq, names(adonis_res_rsq) != "batch")
+
+for (col in names(bhm_anti)){
+  adonis.univ = adonis(as.formula(paste("bray_bhm_anti ~ batch + ", col)), data = bhm_anti)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+tjc_28 = adonis(bray_bhm_tjc ~ batch + tjc_28, data = meta_bhm_tjc)
+adonis_res_pval$tjc_28 = tjc_28$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$tjc_28 = tjc_28$aov.tab[2,]$R2
+
+anti_ccp = adonis(bray_bhm_ccp ~ batch + anti_ccp_value, data = meta_bhm_anti_ccp)
+adonis_res_pval$anti_ccp = anti_ccp$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$anti_ccp = anti_ccp$aov.tab[2,]$R2
+
+sjc_28 = adonis(bray_bhm_sjc ~ batch + sjc_28, data = meta_bhm_sjc)
+adonis_res_pval$sjc_28 = sjc_28$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$sjc_28 = sjc_28$aov.tab[2,]$R2
+
+esr = adonis(bray_bhm_esr ~ batch + esr, data = meta_bhm_esr)
+adonis_res_pval$esr = esr$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$esr = esr$aov.tab[2,]$R2
+
+das28_crp = adonis(bray_bhm_das28_crp ~ batch + das28_crp, data = meta_bhm_das28_crp)
+adonis_res_pval$das28_crp = das28_crp$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$das28_crp = das28_crp$aov.tab[2,]$R2
+
+das28_esr = adonis(bray_bhm_das28_esr ~ batch + das28_esr, data = meta_bhm_das28_esr)
+adonis_res_pval$das28_esr = das28_esr$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$das28_esr = das28_esr$aov.tab[2,]$R2
+
+univar_res_bhm = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_bhm = as.data.frame(t(univar_res_bhm))
+names(univar_res_bhm) = c("P-Value", "R2")
+univar_res_bhm$`P-Value` = as.numeric(univar_res_bhm$`P-Value`)
+univar_res_bhm$R2 = as.numeric(univar_res_bhm$R2)
+univar_res_bhm$p_adj = p.adjust(univar_res_bhm$`P-Value`, "fdr")
+univar_res_bhm = subset(univar_res_bhm, row.names(univar_res_bhm) != "batch")
+list_rownames = c("RF Status(BHM)", "Anti-CCP Status(BHM)", "Tender joint-count (BHM)", "Swollen joint-count (BHM)", "Cohort", "Arthritis Type", "Age", "Cit IgG Status (BHM)", "Cit IgG Value (BHM)", "Orn(Ac) IgG Status (BHM)", "Orn(Ac) IgG Value (BHM)", "Carb IgG Status (BHM)", "Carb IgG Value (BHM)", "Lys(Ac) IgG Status (BHM)", "Lys(Ac) IgG Value (BHM)", "Cit IgA Status (BHM)", "Cit IgA Value (BHM)", "Orn(Ac) IgA Status (BHM)", "Orn(Ac) IgA Value (BHM)", "Carb IgA Status (BHM)", "Carb IgA Value (BHM)", "Lys(Ac) IgA Value (BHM)", "Tender joint-count 28 (BHM)", "Anti-CCP value (BHM)", "Swollen joint-count 28 (BHM)", "Erthrocyte sedimentation rate (BHM)", "DAS28 (crp) (BHM)", "DAS28 (esr) (BHM)")
+univar_res_bhm$clinical = list_rownames
+
+univar_res_bhm$stars = cut(univar_res_bhm$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+```{r barplot_univ_statistics_bhm_tax, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_bhm$p_adj = round(univar_res_bhm$p_adj, 3)
+univar_res_bhm$R2 = univar_res_bhm$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_bhm, aes(reorder(clinical, univar_res_bhm$R2), y = R2, label = univar_res_bhm$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,3) + xlab("")
+
+univar_res_bhm$data_type = c("Taxonomy (BHM)")
+```
+
+\newpage
+
+## Pathways (BHM/NCL Data)  
+
+```{r prep_work_for_BHM_specific_endpoints_path, include= FALSE}
+
+dat_path_bhm = dat_dna_path_common[row.names(dat_dna_path_common) %in% row.names(bhm_dat), ]
+dat_path_bhm = data.frame(t(dat_path_bhm), check.names = F)
+dat_path_bhm = dat_path_bhm[is_common(dat_path_bhm), ]
+dat_path_bhm = data.frame(t(dat_path_bhm), check.names = F)
+
+dat_path_bhm_sub = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(bhm_sub), ]
+bray_bhm_path = vegdist(dat_path_bhm_sub, "bray")
+
+dat_path_bhm_anti = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(bhm_anti), ]
+bray_bhm_path_anti = vegdist(dat_path_bhm_anti, "bray")
+
+dat_path_bhm_ccp = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(meta_bhm_anti_ccp), ]
+bray_bhm_path_ccp = vegdist(dat_path_bhm_ccp, "bray")
+
+dat_path_bhm_tjc = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(meta_bhm_tjc), ]
+bray_bhm_path_tjc = vegdist(dat_path_bhm_tjc, "bray")
+
+dat_path_bhm_sjc = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(meta_bhm_sjc), ]
+bray_bhm_path_sjc = vegdist(dat_path_bhm_sjc, "bray")
+
+dat_path_bhm_esr = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(meta_bhm_esr), ]
+bray_bhm_path_esr = vegdist(dat_path_bhm_esr, "bray")
+
+dat_path_bhm_das28_crp = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(meta_bhm_das28_crp), ]
+bray_bhm_path_das28_crp = vegdist(dat_path_bhm_das28_crp, "bray")
+
+dat_path_bhm_das28_esr = dat_path_bhm[row.names(dat_path_bhm) %in% row.names(meta_bhm_das28_esr), ]
+bray_bhm_path_das28_esr = vegdist(dat_path_bhm_das28_esr, "bray")
+
+```
+
+
+```{r adonis_univariate_bhm_path, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(bhm_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_bhm_path ~ batch +", col)), data = bhm_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+adonis_res_pval = subset(adonis_res_pval, names(adonis_res_pval) != "batch")
+adonis_res_rsq = subset(adonis_res_rsq, names(adonis_res_rsq) != "batch")
+
+for (col in names(bhm_anti)){
+  adonis.univ = adonis(as.formula(paste("bray_bhm_path_anti ~ batch + ", col)), data = bhm_anti)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+tjc_28 = adonis(bray_bhm_path_tjc ~ batch + tjc_28, data = meta_bhm_tjc)
+adonis_res_pval$tjc_28 = tjc_28$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$tjc_28 = tjc_28$aov.tab[2,]$R2
+
+anti_ccp = adonis(bray_bhm_path_ccp ~ batch + anti_ccp_value, data = meta_bhm_anti_ccp)
+adonis_res_pval$anti_ccp = anti_ccp$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$anti_ccp = anti_ccp$aov.tab[2,]$R2
+
+sjc_28 = adonis(bray_bhm_path_sjc ~ batch + sjc_28, data = meta_bhm_sjc)
+adonis_res_pval$sjc_28 = sjc_28$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$sjc_28 = sjc_28$aov.tab[2,]$R2
+
+esr = adonis(bray_bhm_path_esr ~ batch + esr, data = meta_bhm_esr)
+adonis_res_pval$esr = esr$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$esr = esr$aov.tab[2,]$R2
+
+das28_crp = adonis(bray_bhm_path_das28_crp ~ batch + das28_crp, data = meta_bhm_das28_crp)
+adonis_res_pval$das28_crp = das28_crp$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$das28_crp = das28_crp$aov.tab[2,]$R2
+
+das28_esr = adonis(bray_bhm_path_das28_esr ~ batch + das28_esr, data = meta_bhm_das28_esr)
+adonis_res_pval$das28_esr = das28_esr$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$das28_esr = das28_esr$aov.tab[2,]$R2
+
+univar_res_bhm_path = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_bhm_path = as.data.frame(t(univar_res_bhm_path))
+names(univar_res_bhm_path) = c("P-Value", "R2")
+univar_res_bhm_path$`P-Value` = as.numeric(univar_res_bhm_path$`P-Value`)
+univar_res_bhm_path$R2 = as.numeric(univar_res_bhm_path$R2)
+univar_res_bhm_path$p_adj = p.adjust(univar_res_bhm_path$`P-Value`, "fdr")
+univar_res_bhm_path = subset(univar_res_bhm_path, row.names(univar_res_bhm_path) != "batch")
+list_rownames = c("RF Status(BHM)", "Anti-CCP Status(BHM)", "Tender joint-count (BHM)", "Swollen joint-count (BHM)", "Cohort", "Arthritis Type", "Age", "Cit IgG Status (BHM)", "Cit IgG Value (BHM)", "Orn(Ac) IgG Status (BHM)", "Orn(Ac) IgG Value (BHM)", "Carb IgG Status (BHM)", "Carb IgG Value (BHM)", "Lys(Ac) IgG Status (BHM)", "Lys(Ac) IgG Value (BHM)", "Cit IgA Status (BHM)", "Cit IgA Value (BHM)", "Orn(Ac) IgA Status (BHM)", "Orn(Ac) IgA Value (BHM)", "Carb IgA Status (BHM)", "Carb IgA Value (BHM)", "Lys(Ac) IgA Value (BHM)", "Tender joint-count 28 (BHM)", "Anti-CCP value (BHM)", "Swollen joint-count 28 (BHM)", "Erthrocyte sedimentation rate (BHM)", "DAS28 (crp) (BHM)", "DAS28 (esr) (BHM)")
+univar_res_bhm_path$clinical = list_rownames
+
+univar_res_bhm_path$stars = cut(univar_res_bhm_path$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+```{r barplot_univ_statistics_bhm_path, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_bhm_path$p_adj = round(univar_res_bhm_path$p_adj, 3)
+univar_res_bhm_path$R2 = univar_res_bhm_path$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_bhm_path, aes(reorder(clinical, univar_res_bhm_path$R2), y = R2, label = univar_res_bhm_path$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,5) + xlab("")
+
+univar_res_bhm_path$data_type = c("Pathways (BHM)")
+```
+
+\newpage
+
+## ECs (BHM/NCL Data)  
+
+```{r prep_work_for_BHM_specific_endpoints_ecs, include= FALSE}
+
+dat_ecs_bhm = dat_dna_ecs_common[row.names(dat_dna_ecs_common) %in% row.names(bhm_dat), ]
+dat_ecs_bhm = data.frame(t(dat_ecs_bhm), check.names = F)
+dat_ecs_bhm = dat_ecs_bhm[is_common(dat_ecs_bhm), ]
+dat_ecs_bhm = data.frame(t(dat_ecs_bhm), check.names = F)
+
+dat_ecs_bhm_sub = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(bhm_sub), ]
+bray_bhm_ecs = vegdist(dat_ecs_bhm_sub, "bray")
+
+dat_ecs_bhm_anti = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(bhm_anti), ]
+bray_bhm_ecs_anti = vegdist(dat_ecs_bhm_anti, "bray")
+
+dat_ecs_bhm_ccp = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(meta_bhm_anti_ccp), ]
+bray_bhm_ecs_ccp = vegdist(dat_ecs_bhm_ccp, "bray")
+
+dat_ecs_bhm_tjc = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(meta_bhm_tjc), ]
+bray_bhm_ecs_tjc = vegdist(dat_ecs_bhm_tjc, "bray")
+
+dat_ecs_bhm_sjc = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(meta_bhm_sjc), ]
+bray_bhm_ecs_sjc = vegdist(dat_ecs_bhm_sjc, "bray")
+
+dat_ecs_bhm_esr = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(meta_bhm_esr), ]
+bray_bhm_ecs_esr = vegdist(dat_ecs_bhm_esr, "bray")
+
+dat_ecs_bhm_das28_crp = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(meta_bhm_das28_crp), ]
+bray_bhm_ecs_das28_crp = vegdist(dat_ecs_bhm_das28_crp, "bray")
+
+dat_ecs_bhm_das28_esr = dat_ecs_bhm[row.names(dat_ecs_bhm) %in% row.names(meta_bhm_das28_esr), ]
+bray_bhm_ecs_das28_esr = vegdist(dat_ecs_bhm_das28_esr, "bray")
+
+```
+
+
+```{r adonis_univariate_bhm_ecs, echo = FALSE, warning = FALSE, message = FALSE}
+adonis_res_rsq = vector()
+adonis_res_pval = vector()
+for (col in names(bhm_wo_na)){
+  adonis.univ = adonis(as.formula(paste("bray_bhm_ecs ~ batch +", col)), data = bhm_wo_na)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+adonis_res_pval = subset(adonis_res_pval, names(adonis_res_pval) != "batch")
+adonis_res_rsq = subset(adonis_res_rsq, names(adonis_res_rsq) != "batch")
+
+for (col in names(bhm_anti)){
+  adonis.univ = adonis(as.formula(paste("bray_bhm_ecs_anti ~ batch + ", col)), data = bhm_anti)
+  adonis_res_rsq[col] = adonis.univ$aov.tab[2,]$R2
+  adonis_res_pval[col] = adonis.univ$aov.tab[2,]$`Pr(>F)`
+}
+
+tjc_28 = adonis(bray_bhm_ecs_tjc ~ batch + tjc_28, data = meta_bhm_tjc)
+adonis_res_pval$tjc_28 = tjc_28$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$tjc_28 = tjc_28$aov.tab[2,]$R2
+
+anti_ccp = adonis(bray_bhm_ecs_ccp ~ batch + anti_ccp_value, data = meta_bhm_anti_ccp)
+adonis_res_pval$anti_ccp = anti_ccp$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$anti_ccp = anti_ccp$aov.tab[2,]$R2
+
+sjc_28 = adonis(bray_bhm_ecs_sjc ~ batch + sjc_28, data = meta_bhm_sjc)
+adonis_res_pval$sjc_28 = sjc_28$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$sjc_28 = sjc_28$aov.tab[2,]$R2
+
+esr = adonis(bray_bhm_ecs_esr ~ batch + esr, data = meta_bhm_esr)
+adonis_res_pval$esr = esr$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$esr = esr$aov.tab[2,]$R2
+
+das28_crp = adonis(bray_bhm_ecs_das28_crp ~ batch + das28_crp, data = meta_bhm_das28_crp)
+adonis_res_pval$das28_crp = das28_crp$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$das28_crp = das28_crp$aov.tab[2,]$R2
+
+das28_esr = adonis(bray_bhm_ecs_das28_esr ~ batch + das28_esr, data = meta_bhm_das28_esr)
+adonis_res_pval$das28_esr = das28_esr$aov.tab[2,]$`Pr(>F)`
+adonis_res_rsq$das28_esr = das28_esr$aov.tab[2,]$R2
+
+univar_res_bhm_ecs = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_bhm_ecs = as.data.frame(t(univar_res_bhm_ecs))
+names(univar_res_bhm_ecs) = c("P-Value", "R2")
+univar_res_bhm_ecs$`P-Value` = as.numeric(univar_res_bhm_ecs$`P-Value`)
+univar_res_bhm_ecs$R2 = as.numeric(univar_res_bhm_ecs$R2)
+univar_res_bhm_ecs$p_adj = p.adjust(univar_res_bhm_ecs$`P-Value`, "fdr")
+univar_res_bhm_ecs = subset(univar_res_bhm_ecs, row.names(univar_res_bhm_ecs) != "batch")
+list_rownames = c("RF Status(BHM)", "Anti-CCP Status(BHM)", "Tender joint-count (BHM)", "Swollen joint-count (BHM)", "Cohort", "Arthritis Type", "Age", "Cit IgG Status (BHM)", "Cit IgG Value (BHM)", "Orn(Ac) IgG Status (BHM)", "Orn(Ac) IgG Value (BHM)", "Carb IgG Status (BHM)", "Carb IgG Value (BHM)", "Lys(Ac) IgG Status (BHM)", "Lys(Ac) IgG Value (BHM)", "Cit IgA Status (BHM)", "Cit IgA Value (BHM)", "Orn(Ac) IgA Status (BHM)", "Orn(Ac) IgA Value (BHM)", "Carb IgA Status (BHM)", "Carb IgA Value (BHM)", "Lys(Ac) IgA Value (BHM)", "Tender joint-count 28 (BHM)", "Anti-CCP value (BHM)", "Swollen joint-count 28 (BHM)", "Erthrocyte sedimentation rate (BHM)", "DAS28 (crp) (BHM)", "DAS28 (esr) (BHM)")
+univar_res_bhm_ecs$clinical = list_rownames
+
+univar_res_bhm_ecs$stars = cut(univar_res_bhm_ecs$p_adj, c(0, 0.001, 0.01, 0.05, 0.1, Inf), labels = c("***", "**", "*", "'", ""))
+rm(adonis_res_pval)
+rm(adonis_res_rsq)
+```
+
+\newpage
+
+```{r barplot_univ_statistics_bhm_ecs, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_bhm_ecs$p_adj = round(univar_res_bhm_ecs$p_adj, 3)
+univar_res_bhm_ecs$R2 = univar_res_bhm_ecs$R2 *100
+
+dodge = position_dodge(width = 0.8)
+ggplot(data = univar_res_bhm_ecs, aes(reorder(clinical, univar_res_bhm_ecs$R2), y = R2, label = univar_res_bhm_ecs$p_adj)) + geom_bar(stat = "identity", position = dodge, fill = "#800000", color = "black") + geom_text(position = dodge, vjust = 0.5, hjust = -0.1, size = 3) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0,4) + xlab("")
+
+univar_res_bhm_ecs$data_type = c("ECs (BHM)")
+```
+
+
+\newpage
+# Combined Data  
+
+## Tax/Path/ECs (All data)  
+
+```{r barplot_PERMMANOVA_alldata, echo= FALSE, warning = FALSE, message = FALSE, dpi = 300}
+univar = rbind(univar_res_tax, univar_res_path, univar_res_ecs)
+
+col_bar = c("Taxonomy" = "#800000", "Pathways" = "#4B0082", "ECs" = "#9370DB")
+
+univar_wo_batch = subset(univar, clinical != "Sequencing Batch")
+
+#png("univariate_analysis_all_features.png", width = 10, height = 6, units = "in", res = 600)
+ggplot(data = univar_wo_batch, aes(reorder(clinical, univar_wo_batch$R2), y = R2, label = univar_wo_batch$stars, fill = data_type)) + geom_bar(stat = "identity", position = dodge) + geom_text(position = dodge, vjust = 0.8, hjust = -0.1, size = 4) + theme_bw(base_size = 10) + ylab("Univarate R-squared") + coord_flip() + ylim(0, 5) + xlab("") + labs(fill = "Feature type") + scale_fill_manual(values = col_bar) + guides(fill = guide_legend(reverse=T))
+#dev.off()
+```
+
+\newpage
+
+Boxplot of Bray-Curtis Dissimilarity compared to control, colored by diagnosis.   
+
+```{r bray_compare_diagnosis_supplement, , echo= FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.height=4, fig.width=7}
+df_dia_combined = rbind(df_HC_dia_ecs, df_HC_dia_path, df_HC_dia_tax)
+df_dia_combined$data_type = ordered(df_dia_combined$data_type, c("Taxonomy", "Pathways", "ECs"))
+
+df_dia_combined$diagnosis_col = factor(df_dia_combined$diagnosis_col, levels = c("HC", "NIJP", "RA", "AS", "PsA"))
+ggplot(df_dia_combined, aes(x = diagnosis_col, y = bray_distance, color = diagnosis_col, add = "jitter")) + geom_boxplot(lwd = 1.5) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 30, hjust=1)) + xlab("vs. HC") + ylab("Bray Distance") + scale_color_manual(values = col_diagnosis) + labs(color = "Patient diagnosis") + facet_grid(~data_type, space = "free", scales = "free")
+
+```
+
+\newpage
+
+Boxplot of Bray-Curtis Dissimilarity compared to control, colored by inflammation.   
+
+```{r bray_compare_inflam_supplement, echo= FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.height= 4, fig.width=7}
+df_inflam_combined = rbind(df_HC_inflam_ecs, df_HC_inflam_path, df_HC_inflam_tax)
+df_inflam_combined$data_type = ordered(df_inflam_combined$data_type, c("Taxonomy", "Pathways", "ECs"))
+
+ggplot(df_inflam_combined, aes(x = inflammation_col, y = bray_distance, color = inflammation_col, add = "jitter")) + geom_boxplot(lwd = 1.5) + theme_bw(base_size = 10) + theme(axis.text.x = element_text(angle = 30, hjust=1)) + xlab("vs. Not inflamed") + ylab("Bray Distance") + scale_color_manual(values = col_inflammation) + labs(color = "Inflammation status") + facet_grid(~data_type, space = "free", scales = "free")
+
+```
+
+
+\newpage
+## Tax/Path/ECs (All + OAS + BHM)  
+
+All univariate statistics all cohorts  
+
+```{r PERMANOVA_all_supplement, echo= FALSE, warning = FALSE, message = FALSE, fig.width= 10, fig.height= 15, dpi = 300}
+univar = rbind(univar_res_tax, univar_res_path, univar_res_ecs)
+univar = rbind(univar, univar_res_bhm, univar_res_bhm_ecs, univar_res_bhm_path, univar_res_oas, univar_res_oas_ecs, univar_res_oas_path)
+
+col_bar = c("Taxonomy" = "#800000", "Pathways" = "#4B0082", "Pathways (BHM)" = "#8A2BE2", "Pathways (OAS)" = "#9370DB", "ECs" = "#191970", "ECs (BHM)" = "#4682B4", "ECs (OAS)" = "#6495ED", "Taxonomy (BHM)" = "#B22222", "Taxonomy (OAS)" = "#CD5C5C")
+
+#png("univariate_analysis_alldata_all_features.png", width = 10, height = 15, units = "in", res = 600)
+ggplot(data = univar, aes(reorder(clinical, univar$R2), y = R2, label = univar$stars, fill = data_type)) + geom_bar(stat = "identity", position = dodge) + geom_text(position = dodge, vjust = 0.8, hjust = -0.1, size = 4) + theme_bw(base_size = 12) + ylab("Univarate R-squared") + coord_flip() + ylim(0, 5) + xlab("") + labs(fill = "Feature type") + scale_fill_manual(values = col_bar) + guides(fill = guide_legend(reverse=T))
+#dev.off()
+```
+
+
+\newpage 
+
+Reduced figure for the main text manuscript  
+
+```{r PERMANOVA_combine_manuscript, echo= FALSE, warning = FALSE, message = FALSE, fig.width= 12, fig.height= 8, dpi = 600}
+univar_bhm = rbind(univar_res_bhm, univar_res_bhm_path, univar_res_bhm_ecs)
+
+list1 = grep("_igg_", row.names(univar_bhm), value = T)
+list2 = grep("_iga_", row.names(univar_bhm), value = T)
+anti_list = append(list1, list2)
+
+univar$subset = ifelse(row.names(univar) %in% anti_list, "TRUE", "FALSE")
+univar_sub = subset(univar, subset != "TRUE")
+
+univar_sub$data_type = gsub(" ", "", univar_sub$data_type)
+univar_sub$data_type = mgsub(univar_sub$data_type, c("(BHM)", "(OAS)"), c("", ""))
+univar_sub$data_type = gsub("\\()", "", univar_sub$data_type)
+univar_sub$clinical = gsub("BHM", "BHM/NCL", univar_sub$clinical)
+
+col_bar = c("Taxonomy" = "#483D8B", "Pathways" = "#4682B4", "ECs" = "#5F9EA0")
+
+
+include_list = c("Age", "Diagnosis", "Inflammation (crp-value)", "Current Arthritis Modifying Drug", "Smoking status", "Collection Site*", "Disease Duration", "CRP-value", "RF Status(BHM/NCL)", "DAS28 (crp) (BHM/NCL)", "HLA-B27 (OAS)", "BASDAI (OAS)", "Anti-CCP Status(BHM/NCL)", "Haemoglobin", "Albumin", "Alanine Aminotransferase")
+
+univar_test = univar_sub[univar_sub$clinical %in% include_list, ]
+univar_test$clinical = sub("Anti-CCP Status\\(BHM/NCL)", "Anti-CCP (BHM/NCL)", univar_test$clinical)
+univar_test$clinical = sub("Current Arthritis Modifying Drug", "Drug class", univar_test$clinical)
+#univar_test$clinical = sub("Gender", "Sex", univar_test$clinical)
+univar_test$clinical = sub("Collection Site*", "Collection site*", univar_test$clinical)
+univar_test$clinical = sub("Disease Duration", "Disease duration", univar_test$clinical)
+univar_test$clinical = sub("RF Status\\(BHM/NCL)", "RF (BHM/NCL)", univar_test$clinical)
+univar_test = subset(univar_test, row.names(univar_test) != "age3" & row.names(univar_test) != "age4" & row.names(univar_test) != "age5")
+
+#png("univariate_analysis_whem.png", width = 12, height = 8, units = "in", res = 600)
+ggplot(data = univar_test, aes(reorder(clinical, univar_test$R2), y = R2, label = univar_test$stars, fill = data_type)) + geom_bar(stat = "identity", position = dodge) + geom_text(position = dodge, vjust = 0.8, hjust = -0.1, size = 6) + theme_bw(base_size = 20) + ylab("Univariate R-squared") + coord_flip() + ylim(0, 5) + xlab("") + labs(fill = "Feature type") + scale_fill_manual(values = col_bar) + guides(fill = guide_legend(reverse=T))
+#dev.off()
+```
+
+
+\newpage
+
+# randomForest 
+Random Forest analysis on arcsin(pathways)  
+Set with a root of 123 and 1000 trees.  
+
+## Bugs   
+
+```{r setup_all, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+### 07/22/19 Started the RF analysis ###
+str(stat_meta)
+##Attempting this compare the HC to those patients with inflammation
+
+rf_meta = stat_meta[, c(1,4:8, 10:14, 16)]
+rf_meta = subset(rf_meta, inflammation == "Not inflamed" | inflammation == "Inflammation")
+rf_meta = rf_meta[rf_meta$diagnosis == "HC" & rf_meta$inflammation == "Not inflamed" | rf_meta$inflammation == "Inflammation", ]
+#rf_meta = rf_meta[complete.cases(rf_meta),]
+
+rf_meta_bugs = rf_meta[, -c(2:9)]
+
+```
+
+```{r setup_randomforest_tax, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rf_meta_bugs[, c(1,3:4)] = lapply(rf_meta_bugs[, c(1,3:4)], as.factor)
+
+#species_rf = asinh(dat_taxa_species_common)
+AST <- function(x) {
+    return(sign(x) * asin(sqrt(abs(x))))
+}
+
+species_rf = apply(dat_taxa_species_common, 2, AST)
+species_rf = data.frame(species_rf)
+species_rf = species_rf[row.names(species_rf) %in% row.names(rf_meta), ]
+dat_rf = merge(rf_meta_bugs, species_rf, by = "row.names")
+row.names(dat_rf) = dat_rf$Row.names
+dat_rf$Row.names = NULL
+
+
+# CROSS-VALIDATE 5-fold to determine number of predictors for random forest model
+rf_crossval = rfcv(dat_rf, dat_rf[,3], step = 0.8 )
+# check how error increases with decreased number of predictors
+rf_crossval$error.cv
+with(rf_crossval, plot(n.var, error.cv, log="x", type="o", lwd=2)) # 50? predictors
+
+# separate data into testing and training sets.
+set.seed(123)
+samp <- sample(nrow(dat_rf), 0.8 * nrow(dat_rf))
+train <- dat_rf[samp, ]
+test <- dat_rf[-samp, ]
+
+# build the basic model, using 111 predictors based on cross-validation above
+names(train)
+basic_model_bugs = randomForest(inflammation ~ ., mtry = 50, data = train, ntree = 1000, importance = T, proximity = T, confusion = T, err.rate = T, nodesize = 1)
+
+### Importance 
+imp_bugs = importance(basic_model_bugs)
+imp_bugs = data.frame(predictors = rownames(imp_bugs), imp_bugs)
+imp_bugs = arrange(imp_bugs, desc(MeanDecreaseGini))
+imp_bugs$predictors = factor(imp_bugs$predictors, levels = imp_bugs$predictors)
+
+# Select the top 50 predictors
+imp_bugs_top = imp_bugs[1:20, ]
+
+```
+
+```{r model_information_bugs, echo = FALSE, warning = FALSE, message = FALSE}
+basic_model_bugs
+```
+
+\newpage
+
+### Top predictors 
+
+```{r important_gini_tax, echo = FALSE, warning = FALSE, message = FALSE}
+imp_bugs_top$predictors = gsub("s__", "", imp_bugs_top$predictors)
+imp_bugs_top$predictors = gsub("_", " ", imp_bugs_top$predictors)
+imp_bugs_top$predictors = gsub(" bacterium .*", " bacterium", imp_bugs_top$predictors)
+imp_bugs_top$predictors = factor(imp_bugs_top$predictors, levels = imp_bugs_top$predictors)
+ggplot(imp_bugs_top, aes(x = predictors, y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "#5F9EA0") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease gini score") +
+  ggtitle("") + theme_bw(base_size = 10) + theme(axis.text.y = element_text(face = "italic"))
+```
+
+\newpage 
+
+Accuracy of predictors
+
+```{r important_accuracy_tax, echo = FALSE, warning = FALSE, message = FALSE}
+ggplot(imp_bugs_top, aes(x = predictors, y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#6A5ACD") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease accuracy") +
+  ggtitle("") + theme_bw(base_size = 10) + theme(axis.text.y = element_text(face = "italic"))
+```
+
+\newpage
+ROC curves     
+
+```{r basic_roc_tax, echo = FALSE, warning = FALSE, message = FALSE}
+
+pred_test_bugs = predict(basic_model_bugs, test, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+
+pred_test_bugs <- data.frame(pred_test_bugs)
+library(pROC)
+pred_test_roc_bugs <- roc(test$inflammation, pred_test_bugs$Not.inflamed)
+#auc(pred_test_roc)
+
+#plot(pred_test_roc)
+ggroc(pred_test_roc_bugs, lwd=1.2, col="blue")+
+geom_abline(intercept = 1, slope = 1, color = "red", linetype = "dashed", lwd=1.2) + theme_bw()
+
+
+```
+
+
+## Pathways  
+
+```{r setup_randomforest_path, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+species_rf = apply(dat_dna_path_common, 2, AST)
+species_rf = data.frame(species_rf)
+species_rf = species_rf[row.names(species_rf) %in% row.names(rf_meta), ]
+dat_rf = merge(rf_meta_bugs, species_rf, by = "row.names")
+row.names(dat_rf) = dat_rf$Row.names
+dat_rf$Row.names = NULL
+
+
+# CROSS-VALIDATE 5-fold to determine number of predictors for random forest model
+rf_crossval = rfcv(dat_rf, dat_rf[,3], step = 0.8 )
+# check how error increases with decreased number of predictors
+rf_crossval$error.cv
+with(rf_crossval, plot(n.var, error.cv, log="x", type="o", lwd=2)) # 50? predictors
+
+# separate data into testing and training sets.
+set.seed(123)
+samp <- sample(nrow(dat_rf), 0.8 * nrow(dat_rf))
+train <- dat_rf[samp, ]
+test <- dat_rf[-samp, ]
+
+# build the basic model, using 111 predictors based on cross-validation above
+names(train)
+basic_model_path = randomForest(inflammation ~ ., data = train, ntree = 1000, importance = T, proximity = T, confusion = T, err.rate = T, nodesize = 1)
+
+### Importance 
+imp_path = importance(basic_model_path)
+imp_path = data.frame(predictors = rownames(imp_path), imp_path)
+imp_path = arrange(imp_path, desc(MeanDecreaseGini))
+imp_path$predictors = factor(imp_path$predictors, levels = imp_path$predictors)
+
+# Select the top 50 predictors
+imp_path_top = imp_path[1:15, ]
+
+```
+
+```{r model_information_path, echo = FALSE, warning = FALSE, message = FALSE}
+basic_model_path
+```
+
+\newpage
+
+### Top predictors 
+
+```{r important_gini_path, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.height=5, fig.width= 12}
+ggplot(imp_path_top, aes(x = predictors, y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "#5F9EA0") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease gini score") +
+  ggtitle("") + theme_bw(base_size = 10) 
+```
+
+\newpage 
+
+Accuracy of predictors
+
+```{r important_accuracy_path, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.height=5, fig.width= 12}
+ggplot(imp_path_top, aes(x = predictors, y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#6A5ACD") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease accuracy") +
+  ggtitle("") + theme_bw(base_size = 10) 
+```
+
+\newpage
+ROC curves     
+
+```{r basic_roc_path, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+pred_test_path = predict(basic_model_path, test, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+
+pred_test_path <- data.frame(pred_test_path)
+library(pROC)
+pred_test_roc_path <- roc(test$inflammation, pred_test_path$Not.inflamed)
+#auc(pred_test_roc)
+
+#plot(pred_test_roc)
+ggroc(pred_test_roc_path, lwd=1.2, col="blue")+
+geom_abline(intercept = 1, slope = 1, color = "red", linetype = "dashed", lwd=1.2) + theme_bw()
+
+
+```
+
+\newpage
+
+## ECs  
+
+Random Forest analysis on arcsin(ECs)  
+Set with a root of 123 and 1000 trees.   
+
+
+```{r setup_randomforest_ecs, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+species_rf = apply(dat_dna_ecs_common, 2, AST)
+species_rf = data.frame(species_rf)
+species_rf = species_rf[row.names(species_rf) %in% row.names(rf_meta), ]
+dat_rf = merge(rf_meta_bugs, species_rf, by = "row.names")
+row.names(dat_rf) = dat_rf$Row.names
+dat_rf$Row.names = NULL
+
+
+# CROSS-VALIDATE 5-fold to determine number of predictors for random forest model
+rf_crossval = rfcv(dat_rf, dat_rf[,3], step = 0.8 )
+# check how error increases with decreased number of predictors
+rf_crossval$error.cv
+with(rf_crossval, plot(n.var, error.cv, log="x", type="o", lwd=2)) # 50? predictors
+
+# separate data into testing and training sets.
+set.seed(123)
+samp <- sample(nrow(dat_rf), 0.8 * nrow(dat_rf))
+train <- dat_rf[samp, ]
+test <- dat_rf[-samp, ]
+
+# build the basic model, using 111 predictors based on cross-validation above
+names(train)
+basic_model_ecs = randomForest(inflammation ~ ., data = train, ntree = 1000, importance = T, proximity = T, confusion = T, err.rate = T, nodesize = 1)
+
+### Importance 
+imp_ecs = importance(basic_model_ecs)
+imp_ecs = data.frame(predictors = rownames(imp_ecs), imp_ecs)
+imp_ecs = arrange(imp_ecs, desc(MeanDecreaseGini))
+imp_ecs$predictors = factor(imp_ecs$predictors, levels = imp_ecs$predictors)
+
+# Select the top 50 predictors
+imp_ecs_top = imp_ecs[1:20, ]
+
+```
+
+```{r model_information_ecs, echo = FALSE, warning = FALSE, message = FALSE}
+basic_model_ecs
+```
+
+\newpage
+
+### Top predictors 
+
+```{r important_gini_ecs, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.height=5, fig.width= 12}
+ggplot(imp_ecs_top, aes(x = predictors, y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "#5F9EA0") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease gini score") +
+  ggtitle("") + theme_bw(base_size = 10) 
+```
+
+\newpage 
+
+Accuracy of predictors
+
+```{r important_accuracy_ecs, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300, fig.height=5, fig.width= 12}
+ggplot(imp_ecs_top, aes(x = predictors, y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#6A5ACD") +
+  coord_flip() + xlab("Predictors") + ylab("Mean decrease accuracy") +
+  ggtitle("") + theme_bw(base_size = 10) 
+```
+
+\newpage
+ROC curves     
+
+```{r basic_roc_ecs, echo = FALSE, warning = FALSE, message = FALSE, dpi = 300}
+
+pred_test_ecs = predict(basic_model_ecs, test, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+
+pred_test_ecs = data.frame(pred_test_ecs)
+library(pROC)
+pred_test_roc_ecs = roc(test$inflammation, pred_test_ecs$Not.inflamed)
+#auc(pred_test_roc)
+
+#plot(pred_test_roc)
+ggroc(pred_test_roc_ecs, lwd=1.2, col="blue")+
+geom_abline(intercept = 1, slope = 1, color = "red", linetype = "dashed", lwd=1.2) + theme_bw()
+
+
+```
+
+\newpage 
+
+```{r model_compare_roc, echo = FALSE, warning = FALSE, message = FALSE}
+ggroc(list(all=pred_test_roc_bugs, bugs=pred_test_roc_path, cyto=pred_test_roc_ecs), lwd=1.2)+
+geom_abline(intercept = 1, slope = 1, color = "red", linetype = "dashed", lwd=1.2)+
+scale_color_manual(labels = c("Bugs", "Pathways", "ECs"), values= c("#88D04B", "#D65076", "#EFC050"))+
+ggtitle("Model Comparison")+ labs(color = "Model") +
+labs(x="Specificity", y="Sensitivity")+
+theme(axis.text.y = element_text(size=12))+
+theme(axis.text.x = element_text(size=12))+
+theme(plot.title = element_text(face="bold", size=18))+
+theme(axis.title = element_text(size=14))+
+theme(strip.text = element_text(size = 14))+
+theme(legend.title=element_blank()) + theme_bw()
+```
+
+
